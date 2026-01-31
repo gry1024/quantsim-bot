@@ -1,74 +1,60 @@
 import { supabase } from './config';
 
 /**
- * 使用 Yahoo Finance 接口同步 K 线数据 (JSON 格式，更稳定)
+ * 终极方案：使用新浪财经 K 线接口
+ * 优势：云服务器友好，不封 IP，且和你目前的实时行情源一致
  */
 export async function syncSymbolHistory(symbol: string) {
   try {
-    // 1. 构造 Yahoo Finance Chart API (请求最近1个月的日线)
-    // range=1mo (1个月), interval=1d (1天)
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1mo&interval=1d`;
+    // 新浪美股 K 线接口 (JSONP 格式)
+    // symbol 需要小写，例如 qqq
+    const url = `https://stock.finance.sina.com.cn/usstock/api/jsonp.php/cb/US_MinKService.getDailyK?symbol=${symbol.toLowerCase()}`;
     
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: { 
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' 
-      }
-    });
+    const res = await fetch(url);
+    const text = await res.text();
 
-    if (!res.ok) {
-      console.warn(`⚠️ ${symbol}: Yahoo 请求失败 (HTTP ${res.status})`);
-      return;
-    }
-
-    const json = await res.json();
-    const result = json.chart?.result?.[0];
-
-    if (!result) {
-       console.warn(`⚠️ ${symbol}: 未获取到有效数据结构`);
+    // 解析 JSONP
+    // 原始返回格式类似: cb([{"d":"2023-01-01","o":"..."}, ...]);
+    // 我们用正则提取括号里的 JSON 数组
+    const match = text.match(/cb\((.*)\);/);
+    
+    if (!match || !match[1]) {
+       // 偶尔新浪会返回空数据，属于正常波动
+       // console.warn(`⚠️ ${symbol}: 新浪接口返回格式异常或无数据`);
        return;
     }
 
-    const timestamps = result.timestamp || [];
-    const quotes = result.indicators?.quote?.[0] || {};
-    
-    // 2. 解析数据
-    const candles = timestamps.map((ts: number, index: number) => {
-        // 过滤掉数据不全的点
-        if (!quotes.open?.[index] || !quotes.close?.[index]) return null;
+    const data = JSON.parse(match[1]);
 
-        const dateStr = new Date(ts * 1000).toISOString().split('T')[0]; // 转换为 YYYY-MM-DD
+    if (!Array.isArray(data)) return;
 
-        return {
-          symbol: symbol.toUpperCase(),
-          date: dateStr,
-          open: parseFloat(quotes.open[index].toFixed(2)),
-          high: parseFloat(quotes.high[index].toFixed(2)),
-          low: parseFloat(quotes.low[index].toFixed(2)),
-          close: parseFloat(quotes.close[index].toFixed(2)),
-          // 唯一ID
-          id: `${symbol.toUpperCase()}_${dateStr}` 
-        };
-      })
-      .filter((item: any) => item !== null);
+    // 格式清洗
+    // 新浪字段: d:日期, o:开盘, h:最高, l:最低, c:收盘
+    const candles = data.map((item: any) => ({
+        symbol: symbol.toUpperCase(),
+        date: item.d,
+        open: parseFloat(item.o),
+        high: parseFloat(item.h),
+        low: parseFloat(item.l),
+        close: parseFloat(item.c),
+        // 唯一ID
+        id: `${symbol.toUpperCase()}_${item.d}`
+    }))
+    // 只取最近 30 天 (新浪返回的是按时间正序的，所以取最后 30 个)
+    .slice(-30);
 
     if (candles.length === 0) return;
 
-    // 3. 写入 Supabase
-    // 只取最近 30 天，减少数据库压力
-    const recentCandles = candles.slice(-30);
-
     const { error } = await supabase
       .from('market_candles')
-      .upsert(recentCandles, { onConflict: 'symbol,date' });
+      .upsert(candles, { onConflict: 'symbol,date' });
 
     if (error) {
       console.error(`❌ ${symbol} 写入失败:`, error.message);
     } 
-    // 注释掉成功日志，减少刷屏
-    // else { console.log(`✅ ${symbol} 同步完成`); }
+    // 成功时不打印日志，保持清爽
 
   } catch (error) {
-    console.error(`❌ ${symbol} 过程出错:`, error);
+    console.error(`❌ ${symbol} 出错:`, error);
   }
 }
