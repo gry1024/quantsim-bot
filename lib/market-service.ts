@@ -1,64 +1,72 @@
 import { supabase } from './config';
 
 /**
- * 零依赖同步 K 线数据：直接请求 Stooq CSV 接口并解析
+ * 使用 Yahoo Finance 接口同步 K 线数据 (JSON 格式，更稳定)
  */
 export async function syncSymbolHistory(symbol: string) {
   try {
-    console.log(`📊 正在同步 ${symbol} 的 K 线数据...`);
-
-    // 1. 构造 Stooq 官方 CSV 接口 URL
-    const url = `https://stooq.com/q/d/l/?s=${symbol.toLowerCase()}&i=d&e=csv`;
+    // 1. 构造 Yahoo Finance Chart API (请求最近1个月的日线)
+    // range=1mo (1个月), interval=1d (1天)
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1mo&interval=1d`;
     
     const res = await fetch(url, {
       method: 'GET',
-      headers: { 'User-Agent': 'Mozilla/5.0' }
+      headers: { 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' 
+      }
     });
 
     if (!res.ok) {
-      console.warn(`⚠️ ${symbol}: 获取失败 (HTTP ${res.status})`);
+      console.warn(`⚠️ ${symbol}: Yahoo 请求失败 (HTTP ${res.status})`);
       return;
     }
 
-    const text = await res.text();
-    const lines = text.split('\n');
-    
-    // 2. 解析 CSV (跳过表头，过滤空行)
-    const dataLines = lines.slice(1).filter((l: string) => l.trim().length > 0 && !l.includes('No data'));
+    const json = await res.json();
+    const result = json.chart?.result?.[0];
 
-    if (dataLines.length === 0) {
-       console.warn(`⚠️ ${symbol}: 未获取到有效数据`);
+    if (!result) {
+       console.warn(`⚠️ ${symbol}: 未获取到有效数据结构`);
        return;
     }
 
-    // 3. 转换为数据库格式
-    const candles = dataLines.map((line: string) => {
-        const parts = line.split(',');
-        if (parts.length < 5) return null;
+    const timestamps = result.timestamp || [];
+    const quotes = result.indicators?.quote?.[0] || {};
+    
+    // 2. 解析数据
+    const candles = timestamps.map((ts: number, index: number) => {
+        // 过滤掉数据不全的点
+        if (!quotes.open?.[index] || !quotes.close?.[index]) return null;
+
+        const dateStr = new Date(ts * 1000).toISOString().split('T')[0]; // 转换为 YYYY-MM-DD
 
         return {
           symbol: symbol.toUpperCase(),
-          date: parts[0].trim(),           // Date
-          open: parseFloat(parts[1]),     // Open
-          high: parseFloat(parts[2]),     // High
-          low: parseFloat(parts[3]),      // Low
-          close: parseFloat(parts[4]),    // Close
-          id: `${symbol.toUpperCase()}_${parts[0].trim()}` 
+          date: dateStr,
+          open: parseFloat(quotes.open[index].toFixed(2)),
+          high: parseFloat(quotes.high[index].toFixed(2)),
+          low: parseFloat(quotes.low[index].toFixed(2)),
+          close: parseFloat(quotes.close[index].toFixed(2)),
+          // 唯一ID
+          id: `${symbol.toUpperCase()}_${dateStr}` 
         };
       })
-      .filter((item: any) => item !== null && !isNaN(item.close))
-      .slice(0, 50); 
+      .filter((item: any) => item !== null);
 
-    // 4. 写入 Supabase
+    if (candles.length === 0) return;
+
+    // 3. 写入 Supabase
+    // 只取最近 30 天，减少数据库压力
+    const recentCandles = candles.slice(-30);
+
     const { error } = await supabase
       .from('market_candles')
-      .upsert(candles, { onConflict: 'symbol,date' });
+      .upsert(recentCandles, { onConflict: 'symbol,date' });
 
     if (error) {
       console.error(`❌ ${symbol} 写入失败:`, error.message);
-    } else {
-      console.log(`✅ ${symbol} 同步完成 (${candles.length} 条)`);
-    }
+    } 
+    // 注释掉成功日志，减少刷屏
+    // else { console.log(`✅ ${symbol} 同步完成`); }
 
   } catch (error) {
     console.error(`❌ ${symbol} 过程出错:`, error);
