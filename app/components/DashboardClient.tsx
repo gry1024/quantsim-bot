@@ -14,7 +14,27 @@ import EquityChart from './EquityChart';
 import MiniCandleChart from './MiniCandleChart';
 import AssetDonut from './AssetDonut';
 import StrategyView from './StrategyView';
-import { Time } from 'lightweight-charts';
+
+// 1. 定义接口，避免 any 报错
+interface Trade {
+  id: number;
+  symbol: string;
+  action: 'BUY' | 'SELL';
+  price: number;
+  quantity: number;
+  reason: string;
+  created_at: string;
+}
+
+interface Position {
+  id: number;
+  symbol: string;
+  quantity: number;
+  average_cost: number;
+  last_action_price: number;
+  updated_at?: string;
+  created_at?: string;
+}
 
 interface DashboardClientProps {
   portfolio: any;
@@ -34,8 +54,8 @@ export default function DashboardClient({
   
   const [activeView, setActiveView] = useState<'monitor' | 'strategy'>('monitor');
   const [portfolio, setPortfolio] = useState(initialPortfolio);
-  const [positions, setPositions] = useState(initialPositions);
-  const [trades, setTrades] = useState(initialTrades); 
+  const [positions, setPositions] = useState<Position[]>(initialPositions);
+  const [trades, setTrades] = useState<Trade[]>(initialTrades); 
   const [historyMap, setHistoryMap] = useState(initialHistoryMap);
   const [isLive, setIsLive] = useState(false);
 
@@ -49,7 +69,7 @@ export default function DashboardClient({
   useEffect(() => {
     const channel = supabase.channel('realtime-dashboard');
     channel
-      // 💡 修复点：显式声明 (payload: any) 以通过 Vercel 编译
+      // 💡 修复：显式指定 payload 为 any，通过 TS 检查
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'portfolio' }, (payload: any) => setPortfolio(payload.new))
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'positions' }, (payload: any) => {
           setPositions((prev) => {
@@ -99,7 +119,7 @@ export default function DashboardClient({
 
   return (
     <div className="flex h-screen bg-[#F8FAFC] font-sans text-slate-800 overflow-hidden">
-      {/* ... 侧边栏及主界面代码 ... */}
+      
       <aside className="w-72 bg-white border-r border-slate-200 flex-col shadow-sm z-20 hidden md:flex h-full">
         <div className="p-6 border-b border-slate-100 shrink-0">
           <div className="flex items-center gap-3">
@@ -165,7 +185,6 @@ export default function DashboardClient({
                     {isLive ? 'LIVE' : 'WAIT'}
                 </span>
             </div>
-            {/* 💡 修复点：添加 typeof window 保护，防止服务端渲染报错 */}
             <button onClick={() => typeof window !== 'undefined' && window.location.reload()} className="p-2 md:px-3 md:py-1.5 bg-white border border-slate-200 text-slate-600 text-xs font-medium rounded-lg hover:bg-slate-50 transition flex items-center gap-2 shadow-sm">
               <RefreshCcw size={14} /> <span className="hidden md:inline">刷新</span>
             </button>
@@ -200,7 +219,7 @@ export default function DashboardClient({
                   </h3>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
-                  {positions?.map((pos: any) => {
+                  {positions?.map((pos: Position) => {
                     const currentPrice = pos.last_action_price || 0;
                     const avgCost = pos.average_cost || 0;
                     const quantity = pos.quantity || 0;
@@ -297,7 +316,7 @@ export default function DashboardClient({
                     <div className="col-span-1 text-right">策略</div>
                   </div>
                   <div className="divide-y divide-slate-50">
-                    {trades?.map((trade: any) => {
+                    {trades?.map((trade: Trade) => {
                       const tradeAmount = trade.price * trade.quantity;
                       return (
                         <div key={trade.id} className="grid grid-cols-2 md:grid-cols-6 px-4 md:px-6 py-3 md:py-3.5 items-center hover:bg-slate-50/80 transition-colors text-sm">
