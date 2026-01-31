@@ -1,5 +1,9 @@
 // 运行命令: npx tsx --env-file=.env.local scripts/daemon.ts
-
+// scripts/daemon.ts
+// 1. 引入 dns 模块
+import { setDefaultResultOrder } from 'node:dns';
+// 2. 强制设置 DNS 解析优先使用 IPv4
+setDefaultResultOrder('ipv4first');
 import { runTradingBot } from '../lib/engine';
 import { syncSymbolHistory } from '../lib/market-service';
 import { CONFIG } from '../lib/config';
