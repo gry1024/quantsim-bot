@@ -20,7 +20,7 @@ interface DashboardClientProps {
   portfolio: any;
   positions: any[];
   trades: any[];
-  chartData: { time: string; value: number }[]; // 明确类型
+  chartData: { time: string; value: number }[];
   historyMap: Record<string, any[]>;
 }
 
@@ -39,7 +39,6 @@ export default function DashboardClient({
   const [historyMap, setHistoryMap] = useState(initialHistoryMap);
   const [isLive, setIsLive] = useState(false);
 
-  // 基础资产计算
   const initialCapital = portfolio?.initial_capital || 1000000;
   const currentEquity = portfolio?.total_equity || initialCapital;
   const cashBalance = portfolio?.cash_balance || 0;
@@ -50,18 +49,19 @@ export default function DashboardClient({
   useEffect(() => {
     const channel = supabase.channel('realtime-dashboard');
     channel
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'portfolio' }, (payload) => setPortfolio(payload.new))
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'positions' }, (payload) => {
+      // 💡 修复点：显式声明 (payload: any) 以通过 Vercel 编译
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'portfolio' }, (payload: any) => setPortfolio(payload.new))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'positions' }, (payload: any) => {
           setPositions((prev) => {
              const exists = prev.find(p => p.id === payload.new.id);
              if (exists) return prev.map(p => p.id === payload.new.id ? payload.new : p);
              return [...prev, payload.new];
           });
       })
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'trades' }, (payload) => {
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'trades' }, (payload: any) => {
           setTrades((prev) => [payload.new, ...prev]);
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'market_candles' }, (payload) => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'market_candles' }, (payload: any) => {
           const newCandle = payload.new as any;
           if (!newCandle || !newCandle.symbol) return;
           setHistoryMap((prevMap) => {
@@ -79,35 +79,27 @@ export default function DashboardClient({
           });
         }
       )
-      .subscribe((status) => { if (status === 'SUBSCRIBED') setIsLive(true); });
+      .subscribe((status: string) => { if (status === 'SUBSCRIBED') setIsLive(true); });
     return () => { supabase.removeChannel(channel); };
   }, []);
 
-  // =======================================================
-  // 💡 关键修复：动态生成包含“今日实时净值”的图表数据
-  // =======================================================
   const finalChartData = [...(initialChartData || [])];
-  const todayStr = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  const todayStr = new Date().toISOString().split('T')[0];
   
   if (finalChartData.length > 0) {
     const lastPoint = finalChartData[finalChartData.length - 1];
-    // 如果历史数据的最后一个点不是今天，就把今天的实时数据追加上去
     if (lastPoint.time !== todayStr) {
       finalChartData.push({ time: todayStr, value: currentEquity });
     } else {
-      // 如果已经是今天（可能是刚刷新的快照），强制用实时数据更新它，保证“跳动”
       finalChartData[finalChartData.length - 1].value = currentEquity;
     }
   } else {
-    // 如果没有历史数据，至少显示当前点
     finalChartData.push({ time: todayStr, value: currentEquity });
   }
-  // =======================================================
 
   return (
     <div className="flex h-screen bg-[#F8FAFC] font-sans text-slate-800 overflow-hidden">
-      
-      {/* 侧边栏 */}
+      {/* ... 侧边栏及主界面代码 ... */}
       <aside className="w-72 bg-white border-r border-slate-200 flex-col shadow-sm z-20 hidden md:flex h-full">
         <div className="p-6 border-b border-slate-100 shrink-0">
           <div className="flex items-center gap-3">
@@ -151,7 +143,6 @@ export default function DashboardClient({
         </div>
       </aside>
 
-      {/* 主界面 */}
       <main className="flex-1 flex flex-col h-screen overflow-hidden bg-[#F8FAFC] relative">
         <header className="px-4 md:px-8 py-4 md:py-5 bg-white border-b border-slate-200 flex justify-between items-center z-10 shrink-0">
           <div className="flex items-center gap-3">
@@ -174,13 +165,13 @@ export default function DashboardClient({
                     {isLive ? 'LIVE' : 'WAIT'}
                 </span>
             </div>
-            <button onClick={() => window.location.reload()} className="p-2 md:px-3 md:py-1.5 bg-white border border-slate-200 text-slate-600 text-xs font-medium rounded-lg hover:bg-slate-50 transition flex items-center gap-2 shadow-sm">
+            {/* 💡 修复点：添加 typeof window 保护，防止服务端渲染报错 */}
+            <button onClick={() => typeof window !== 'undefined' && window.location.reload()} className="p-2 md:px-3 md:py-1.5 bg-white border border-slate-200 text-slate-600 text-xs font-medium rounded-lg hover:bg-slate-50 transition flex items-center gap-2 shadow-sm">
               <RefreshCcw size={14} /> <span className="hidden md:inline">刷新</span>
             </button>
           </div>
         </header>
 
-        {/* 手机端总资产 */}
         <div className="md:hidden bg-white border-b border-slate-100 px-4 py-3 shrink-0">
            <div className="flex justify-between items-end">
              <div>
@@ -201,9 +192,7 @@ export default function DashboardClient({
             <StrategyView />
           ) : (
             <>
-              {/* 💡 这里的 ChartData 换成了拼接好的 finalChartData */}
               <section className="mb-6 md:mb-8 hidden md:block"><EquityChart data={finalChartData} /></section>
-              
               <section className="mb-8">
                 <div className="flex items-center justify-between mb-4 px-1">
                   <h3 className="font-bold text-slate-700 flex items-center gap-2 text-sm md:text-base">
@@ -211,16 +200,14 @@ export default function DashboardClient({
                   </h3>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
-                  {positions?.map((pos) => {
+                  {positions?.map((pos: any) => {
                     const currentPrice = pos.last_action_price || 0;
                     const avgCost = pos.average_cost || 0;
                     const quantity = pos.quantity || 0;
-                    
                     const investedPrincipal = avgCost * quantity;
                     const marketValue = currentPrice * quantity;
                     const totalReturn = marketValue - investedPrincipal;
                     const totalReturnPercent = avgCost > 0 ? (totalReturn / investedPrincipal) * 100 : 0;
-                    
                     const realHistory = historyMap[pos.symbol] || [];
                     const todayStr = new Date().toISOString().split('T')[0];
                     
@@ -240,13 +227,10 @@ export default function DashboardClient({
 
                     const updateTime = pos.updated_at ? parseISO(pos.updated_at) : new Date();
                     const isNewPosition = isSameDay(updateTime, new Date());
-                    
                     const referencePrice = isNewPosition ? avgCost : prevClose;
-                    
                     const dayReturn = (currentPrice - referencePrice) * quantity;
                     const finalDayReturn = Math.abs(currentPrice - referencePrice) < 0.001 ? 0 : dayReturn;
                     const dayReturnPercent = referencePrice > 0 ? ((currentPrice - referencePrice) / referencePrice) * 100 : 0;
-
                     const cnName = STOCK_NAMES[pos.symbol] || pos.symbol;
 
                     return (
@@ -260,7 +244,7 @@ export default function DashboardClient({
                               </div>
                             </div>
                             <div className="text-right">
-                              <div key={currentPrice} className="text-xl md:text-2xl font-bold text-slate-800 transition-colors duration-300 font-mono">
+                              <div className="text-xl md:text-2xl font-bold text-slate-800 transition-colors duration-300 font-mono">
                                 ${Number(currentPrice).toFixed(2)}
                               </div>
                             </div>
@@ -313,7 +297,7 @@ export default function DashboardClient({
                     <div className="col-span-1 text-right">策略</div>
                   </div>
                   <div className="divide-y divide-slate-50">
-                    {trades?.map((trade) => {
+                    {trades?.map((trade: any) => {
                       const tradeAmount = trade.price * trade.quantity;
                       return (
                         <div key={trade.id} className="grid grid-cols-2 md:grid-cols-6 px-4 md:px-6 py-3 md:py-3.5 items-center hover:bg-slate-50/80 transition-colors text-sm">
