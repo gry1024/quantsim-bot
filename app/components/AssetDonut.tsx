@@ -17,7 +17,6 @@ export default function AssetDonut({ positions, cash, total }: { positions: any[
 
   return (
     <div className="flex flex-col w-full">
-      {/* 上半部分：图表 (保持固定高度，否则会消失) */}
       <div className="h-48 w-full relative -ml-2 shrink-0">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
@@ -31,12 +30,13 @@ export default function AssetDonut({ positions, cash, total }: { positions: any[
               dataKey="value"
               stroke="none"
             >
-              {data.map((entry, index) => (
+              {data.map((_entry, index) => (
                 <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
               ))}
             </Pie>
             <Tooltip 
-              formatter={(value: number) => `$${value.toLocaleString()}`}
+              // 💡 修复点：允许 value 为任意类型并强制转换，防止编译失败
+              formatter={(value: any) => `$${Number(value || 0).toLocaleString()}`}
               contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
             />
           </PieChart>
@@ -50,7 +50,6 @@ export default function AssetDonut({ positions, cash, total }: { positions: any[
         </div>
       </div>
 
-      {/* 下半部分：列表 (移除 overflow-y-auto，改为自动撑开) */}
       <div className="mt-2 w-full px-1 pb-4">
         <div className="space-y-3">
           {data.map((item, index) => {
