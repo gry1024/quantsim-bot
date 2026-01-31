@@ -5,10 +5,9 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 
 // 2. 获取 Key (适配多种情况)
 const supabaseKey = 
+  process.env.SUPABASE_SERVICE_ROLE_KEY || 
   process.env.NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY || 
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-  process.env.SUPABASE_SERVICE_ROLE_KEY;
-
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 // 3. 初始化客户端
 export const supabase = (supabaseUrl && supabaseKey) 
   ? createClient(supabaseUrl, supabaseKey, {
