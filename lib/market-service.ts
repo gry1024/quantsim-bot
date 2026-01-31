@@ -1,128 +1,90 @@
 import { supabase } from './config';
 
-export interface KlineData {
-  time: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-}
+// 不需要引入任何第三方库，直接用原生 fetch
 
-// --- 核心功能 A: 从 Stooq 抓取 CSV 并同步到数据库 (Write) ---
 export async function syncSymbolHistory(symbol: string) {
-  // Stooq 格式: 代码 + .US (例如 NVDA.US)
-  const stooqSymbol = `${symbol.toUpperCase()}.US`;
-  // 接口: s=代码, i=d (日线)
-  const url = `https://stooq.com/q/d/l/?s=${stooqSymbol}&i=d`;
-
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
+    console.log(`📊 正在同步 ${symbol} 的 K 线数据...`);
+
+    // 1. 直接构造 Stooq CSV 下载链接
+    // 参数说明: s=代码, i=d(日线), e=csv(格式)
+    // 某些美股可能需要加 .US 后缀，但通常大盘股直接输代码也行
+    const url = `https://stooq.com/q/d/l/?s=${symbol.toLowerCase()}&i=d&e=csv`;
     
-    const csvText = await res.text();
-    
-    // Stooq 返回 CSV 格式:
-    // Date,Open,High,Low,Close,Volume
-    // 2024-01-30,120.5,122.0,119.5,121.0,5000000
-    
-    const lines = csvText.split('\n');
-    
-    // 检查是否有数据 (第一行是表头，第二行开始是数据)
-    if (lines.length < 2 || !lines[0].includes('Date')) {
-      console.warn(`⚠️ [WARN] ${symbol} Stooq 未返回有效 CSV 数据。Content: ${csvText.substring(0, 50)}`);
+    // 2. 发起请求
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; QuantSimBot/1.0)'
+      }
+    });
+
+    if (!res.ok) {
+      console.warn(`⚠️ ${symbol}: 请求失败 (HTTP ${res.status})`);
       return;
     }
 
-    const candlesToUpsert = [];
+    const text = await res.text();
 
-    // 从第 1 行开始遍历 (跳过表头)
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line) continue;
+    // 3. 解析 CSV 文本
+    // 格式通常为: Date,Open,High,Low,Close,Volume
+    // 2023-10-27,415.20,418.50,412.10,415.50,5000000
+    
+    const lines = text.split('\n');
+    
+    // 去掉第一行表头 (Date,Open...)，并过滤空行
+    const dataLines = lines.slice(1).filter((l: string) => l.trim().length > 0 && !l.includes('No data'));
 
-      const parts = line.split(',');
-      // parts: [Date, Open, High, Low, Close, Volume]
-      // index: 0=Date, 1=Open, 2=High, 3=Low, 4=Close
-      
-      const date = parts[0];
-      const open = parseFloat(parts[1]);
-      const high = parseFloat(parts[2]);
-      const low = parseFloat(parts[3]);
-      const close = parseFloat(parts[4]);
-
-      // 过滤掉无效数据
-      if (isNaN(open) || isNaN(close)) continue;
-
-      candlesToUpsert.push({
-        symbol: symbol.toUpperCase(),
-        date: date, // "2024-01-30"
-        open,
-        high,
-        low,
-        close,
-      });
+    if (dataLines.length === 0) {
+       console.warn(`⚠️ ${symbol}: 未获取到 K 线数据 (可能是代码错误或 Stooq 限制)`);
+       return;
     }
 
-    // 只保留最近 180 天的数据 (Stooq 会返回几十年的，太大了)
-    const recentCandles = candlesToUpsert
-      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-      .slice(-180);
+    // 4. 转换为对象数组
+    const candles = dataLines.map((line: string) => {
+        const parts = line.split(',');
+        // Stooq CSV: Date[0], Open[1], High[2], Low[3], Close[4]
+        if (parts.length < 5) return null;
 
-    if (recentCandles.length === 0) return;
+        const date = parts[0];
+        const open = parseFloat(parts[1]);
+        const high = parseFloat(parts[2]);
+        const low = parseFloat(parts[3]);
+        const close = parseFloat(parts[4]);
 
-    // ⚡️ 写入数据库
+        // 简单的完整性检查
+        if (isNaN(close) || isNaN(open)) return null;
+
+        return {
+          symbol: symbol.toUpperCase(),
+          date: date, 
+          open: open,
+          high: high,
+          low: low,
+          close: close,
+          // 唯一ID: symbol + date
+          id: `${symbol.toUpperCase()}_${date}` 
+        };
+      })
+      .filter((item: any) => item !== null) // 过滤掉解析失败的行
+      .slice(0, 50); // 只取最近 50 天的数据，避免写入太多
+
+    if (candles.length === 0) {
+      return;
+    }
+
+    // 5. 写入 Supabase
     const { error } = await supabase
       .from('market_candles')
-      .upsert(recentCandles, { onConflict: 'symbol,date' });
+      .upsert(candles, { onConflict: 'symbol,date' });
 
     if (error) {
-      console.error(`❌ [ERROR] DB Write Failed (${symbol}):`, error.message);
+      console.error(`❌ ${symbol} K 线写入失败:`, error.message);
     } else {
-      console.log(`✅ [SUCCESS] ${symbol}: 成功同步 ${recentCandles.length} 条数据 (Source: Stooq)`);
+      console.log(`✅ ${symbol} K 线同步完成 (${candles.length} 条)`);
     }
 
   } catch (error) {
-    console.error(`❌ [FATAL] ${symbol} 网络异常:`, error);
+    console.error(`❌ ${symbol} 同步过程出错:`, error);
   }
-}
-
-// --- 核心功能 B: 从数据库读取数据给前端 (Read) ---
-export async function getHistoryFromDB(symbol: string): Promise<KlineData[]> {
-  const { data, error } = await supabase
-    .from('market_candles')
-    .select('date, open, high, low, close')
-    .eq('symbol', symbol)
-    .order('date', { ascending: true })
-    .limit(180);
-
-  if (error) {
-    console.error("DB Read Error:", error.message);
-    return [];
-  }
-  
-  if (!data || data.length === 0) {
-    return []; 
-  }
-
-  return data.map(d => ({
-    time: d.date,
-    open: d.open,
-    high: d.high,
-    low: d.low,
-    close: d.close
-  }));
-}
-
-// 批量获取
-export async function fetchAllPositionsHistory(positions: any[]) {
-  const historyMap: Record<string, KlineData[]> = {};
-  if (!positions || positions.length === 0) return historyMap;
-
-  const promises = positions.map(async (pos) => {
-    const data = await getHistoryFromDB(pos.symbol);
-    historyMap[pos.symbol] = data;
-  });
-
-  await Promise.all(promises);
-  return historyMap;
 }
