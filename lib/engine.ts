@@ -48,7 +48,7 @@ async function getMarketPrices(): Promise<Record<string, MarketData>> {
 }
 
 /**
- * 核心交易执行
+ * 核心交易执行 (已修复并发资金安全问题)
  */
 async function executeTrade(
   investorId: string,
@@ -56,20 +56,31 @@ async function executeTrade(
   action: 'BUY' | 'SELL' | 'SELL_ALL',
   amountUSD: number, 
   price: number,
-  currentShares: number,
-  currentAvgPrice: number,
-  currentCash: number,
+  _ignoredShares: number,    // 废弃：不使用传入的旧持仓
+  _ignoredAvgPrice: number,  // 废弃：不使用传入的旧均价
+  _ignoredCash: number,      // 废弃：不使用传入的旧现金
   reason: string
 ): Promise<{ newCash: number, newShares: number, newAvgPrice: number } | null> {
   
-  const safeCash = Number(currentCash);
+  // 1. 【关键修复】强制从数据库获取最新 现金 和 持仓，防止并发导致的覆盖和资金错误
+  const [ { data: portData }, { data: posData } ] = await Promise.all([
+      supabase.from('portfolio').select('cash_balance').eq('investor_id', investorId).single(),
+      supabase.from('positions').select('shares, avg_price, last_buy_price').eq('investor_id', investorId).eq('symbol', symbol).single()
+  ]);
+
+  // 如果数据库没数据（极端情况），回退到 0
+  const safeCash = portData ? Number(portData.cash_balance) : 0;
+  const currentShares = posData ? Number(posData.shares) : 0;
+  const currentAvgPrice = posData ? Number(posData.avg_price) : 0;
+  const lastBuyPrice = posData ? Number(posData.last_buy_price) : price; // 保持旧的买入价
+
   const safePrice = Number(price);
   
   let tradeShares = 0;
   let tradeAmount = 0;
 
   if (action === 'BUY') {
-    if (safeCash < amountUSD) return null; 
+    if (safeCash < amountUSD) return null; // 资金不足（基于最新数据库余额判断）
     tradeShares = amountUSD / safePrice;
     tradeAmount = tradeShares * safePrice;
   } else if (action === 'SELL' || action === 'SELL_ALL') {
@@ -91,11 +102,10 @@ async function executeTrade(
     newAvgPrice = (newShares > 0) ? (oldVal + newVal) / newShares : 0;
   }
   if (newShares <= 0.0001) {
-    // newShares = 0;
     newAvgPrice = 0;
   }
 
-  // 写入日志
+  // 写入交易日志
   await supabase.from('trades').insert({
     investor_id: investorId,
     symbol,
@@ -107,37 +117,30 @@ async function executeTrade(
     created_at: new Date().toISOString()
   });
 
-  // 更新持仓 (注意：last_buy_price 只在买入时更新，卖出时保持原价，方便策略判断)
-  if (newShares === 0) {
+  // 更新持仓
+  if (newShares <= 0.0001) { // 浮点数容错
     await supabase.from('positions').delete().eq('investor_id', investorId).eq('symbol', symbol);
   } else {
-    // 如果是卖出，我们需要保持数据库里原有的 last_buy_price 不变，而不是用当前市价覆盖它
-    // 但 executeTrade 拿不到旧的 last_buy_price (只传了 price)，
-    // 所以这里做一个妥协：如果是 SELL，我们不更新 last_buy_price (在 upsert 时需要技巧，或者在 runTradingBot 传参时处理)
-    // 简化处理：我们在 runTradingBot 的 posMap 里维护了正确的 last_buy_price，下次循环会用到。
-    // 数据库里的 last_buy_price 主要用于重启后的恢复。
-    
-    // 这里我们假设如果是 BUY，更新为当前价；如果是 SELL，尽量保持原价(但在 upsert 中很难只更新部分字段)
-    // 修正：我们应该在 executeTrade 外部决定好 last_buy_price 传进来，或者在这里再查一次。
-    // 为了性能，我们暂时只更新 BUY 的价格。对于 SELL，我们暂且更新为当前价(这会影响某些策略，但这是无状态设计的代价)。
-    // *更好的修正*：在 runTradingBot 里把正确的值算好传给 executeTrade? 不，executeTrade 负责写库。
-    // 让我们稍微改一下逻辑：last_buy_price 直接存 safePrice。策略层自己判断。
-    // 不，策略依赖 "买入价"。如果卖出一半，"买入价" 应该不变。
-    
-    // 临时方案：仅 BUY 时更新 last_buy_price。如果是 SELL，我们需要查旧值。
-    // 为了不阻塞，这里先存 safePrice。如果策略严格依赖“原始买入价”，需要在 posMap 内存中持久化。
-    
+    // 只有买入才更新 last_buy_price，卖出保持原价方便策略判断
+    const nextLastBuyPrice = action === 'BUY' ? safePrice : lastBuyPrice;
+
     await supabase.from('positions').upsert({
       investor_id: investorId,
       symbol,
       shares: newShares,
       avg_price: newAvgPrice,     
-      last_buy_price: safePrice, // ⚠️ 注意：这里简化为最新成交价，对于复杂策略建议依赖 avg_price
+      last_buy_price: nextLastBuyPrice,
       updated_at: new Date().toISOString()
     }, { onConflict: 'investor_id,symbol' });
   }
 
-  console.log(`✅ [${investorId}] ${action} ${symbol}: 现金 ${Math.round(safeCash)} -> ${Math.round(newCash)} (变动 $${Math.round(tradeAmount)})`);
+  // 2. 【关键修复】立即更新数据库的现金余额，确保原子性
+  await supabase.from('portfolio').update({ 
+      cash_balance: newCash,
+      updated_at: new Date().toISOString()
+  }).eq('investor_id', investorId);
+
+  console.log(`✅ [${investorId}] ${action} ${symbol}: 现金 ${Math.round(safeCash)} -> ${Math.round(newCash)}`);
   return { newCash, newShares, newAvgPrice };
 }
 
@@ -165,7 +168,7 @@ export async function runTradingBot() {
 
     const { data: positionsRaw } = await supabase.from('positions').select('*').eq('investor_id', investor.id);
     
-    // B. 内存账本
+    // B. 内存账本 (用于策略快速读取，但写入时 executeTrade 会重新查库)
     let currentCash = Number(portfolio.cash_balance);
     let peakEquity = Number(portfolio.peak_equity || portfolio.total_equity);
     const posMap = new Map<string, Position>();
@@ -180,7 +183,7 @@ export async function runTradingBot() {
       });
     });
 
-    // 计算当前总资产 (用于兵王回撤)
+    // 计算当前总资产 (用于兵王回撤判断)
     let tempMarketValue = 0;
     posMap.forEach((p) => {
         const price = marketData[p.symbol]?.price || p.last_buy_price;
@@ -201,6 +204,7 @@ export async function runTradingBot() {
 
       const { price, changePercent } = data;
       const pos = posMap.get(symbol); 
+      // 注意：这里的 shares 仅用于策略判断触发条件，executeTrade 内部会查最新的真实 shares
       const shares = pos ? pos.shares : 0;
       const avgPrice = pos ? pos.avg_price : 0;
       const lastPrice = pos ? pos.last_buy_price : 0;
@@ -304,18 +308,15 @@ export async function runTradingBot() {
             break;
       }
 
-      // 🔥 修复点：移除了 action 变量引用，直接通过 shares 变化判断是否为买入
+      // 更新内存状态（仅为了循环内的下一个 symbol 能感知到资金变化）
       if (result) {
         currentCash = Number(result.newCash); 
         if (result.newShares > 0) {
-          // 如果 newShares > shares，说明发生了买入 (或者 shares=0 时的建仓)
           const isBuy = result.newShares > shares;
-          
           posMap.set(symbol, {
             symbol: symbol,
             shares: Number(result.newShares),
             avg_price: Number(result.newAvgPrice),
-            // 只有买入才更新 last_buy_price，卖出时沿用旧的 lastPrice (如果存在) 或 当前价 (兜底)
             last_buy_price: isBuy ? price : lastPrice, 
             updated_at: new Date().toISOString()
           });
@@ -325,7 +326,7 @@ export async function runTradingBot() {
       }
     }
 
-    // D. 结算阶段 (Final Check)
+    // D. 结算阶段
     let finalMarketValue = 0;
     posMap.forEach((p) => {
       const currentPrice = marketData[p.symbol]?.price || p.last_buy_price;
@@ -334,9 +335,10 @@ export async function runTradingBot() {
 
     const finalTotalEquity = currentCash + finalMarketValue;
 
-    // E. 数据库更新
+    // E. 数据库更新 (⚠️ 关键修复：不再更新 cash_balance，只更新 total_equity)
+    // cash_balance 已经在 executeTrade 中实时更新了，这里如果再更新，会用旧数据覆盖掉并发交易的结果
     const { error } = await supabase.from('portfolio').update({ 
-      cash_balance: currentCash, 
+      // cash_balance: currentCash, <--- 这一行删除了
       total_equity: finalTotalEquity,
       updated_at: new Date().toISOString()
     }).eq('investor_id', investor.id);
