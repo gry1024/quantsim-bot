@@ -90,7 +90,7 @@ async function getMarketPrices(): Promise<Record<string, MarketData>> {
 }
 
 // ----------------------------------------------------------------------
-// ⚡ 交易执行器 (返回更新后的现金余额)
+// ⚡ 交易执行器 (返回更新后的现金余额和持仓)
 // ----------------------------------------------------------------------
 async function executeTrade(
   investorId: string,
@@ -101,12 +101,12 @@ async function executeTrade(
   shares: number,
   reason: string,
   cash: number
-): Promise<number | null> { // 👈 修改：返回 number | null
+): Promise<{ newCash: number, newShares: number } | null> {
   let tradeShares = 0;
   let tradeAmount = 0;
 
   if (action === 'BUY') {
-    if (cash < amountUSD) return null; // 资金不足
+    if (cash < amountUSD) return null; 
     tradeShares = amountUSD / price;
     tradeAmount = amountUSD;
   } else if (action === 'SELL') {
@@ -122,7 +122,7 @@ async function executeTrade(
 
   console.log(`⚡ [${investorId}] ${action} ${symbol}: ${reason} | $${tradeAmount.toFixed(0)}`);
 
-  // 1. 记录交易
+  // DB Operations
   await supabase.from('trades').insert({
     investor_id: investorId,
     symbol,
@@ -134,11 +134,9 @@ async function executeTrade(
     created_at: new Date().toISOString()
   });
 
-  // 2. 更新现金
   const newCash = action === 'BUY' ? cash - tradeAmount : cash + tradeAmount;
   await supabase.from('portfolio').update({ cash_balance: newCash }).eq('investor_id', investorId);
 
-  // 3. 更新持仓
   const { data: oldPos } = await supabase.from('positions')
     .select('*')
     .eq('investor_id', investorId)
@@ -165,12 +163,13 @@ async function executeTrade(
     finalShares -= tradeShares;
     if (finalShares < 0.001) {
         await supabase.from('positions').delete().eq('investor_id', investorId).eq('symbol', symbol);
+        finalShares = 0; // 卖光了归零
     } else {
         await supabase.from('positions').update({ shares: finalShares }).eq('investor_id', investorId).eq('symbol', symbol);
     }
   }
   
-  return newCash; // 👈 返回最新现金
+  return { newCash, newShares: finalShares };
 }
 
 // ----------------------------------------------------------------------
@@ -182,51 +181,47 @@ export async function runTradingBot() {
   for (const investor of INVESTORS) {
     const investorId = investor.id;
 
-    // 获取数据
+    // 1. 初始化数据
     const { data: portfolioRaw } = await supabase.from('portfolio').select('*').eq('investor_id', investorId).single();
     if (!portfolioRaw) continue; 
     const portfolio = portfolioRaw as Portfolio;
 
     const { data: positionsRaw } = await supabase.from('positions').select('*').eq('investor_id', investorId);
-    const positions = (positionsRaw as Position[]) || [];
-    const posMap = new Map(positions.map(p => [p.symbol, p]));
-
-    let currentCash = Number(portfolio.cash_balance);
-    const peakEquity = Number(portfolio.peak_equity);
     
-    // 🛠️ 关键：定义局部 trade 函数，自动更新 currentCash
+    // 内存中维护状态，防止脏读
+    let currentCash = Number(portfolio.cash_balance);
+    const posMap = new Map<string, { shares: number, avg_price: number, last_buy_price: number }>();
+    
+    // 🔧 修复点：显式给 p 指定 any 类型，解决 TypeScript 报错
+    (positionsRaw || []).forEach((p: any) => posMap.set(p.symbol, { 
+        shares: Number(p.shares), 
+        avg_price: Number(p.avg_price), 
+        last_buy_price: Number(p.last_buy_price) 
+    }));
+
+    // 定义内部交易函数，实时更新内存状态
     const trade = async (symbol: string, action: 'BUY' | 'SELL' | 'SELL_ALL', amount: number, price: number, shares: number, reason: string) => {
-        const newCash = await executeTrade(investorId, symbol, action, amount, price, shares, reason, currentCash);
-        if (newCash !== null) {
-            currentCash = newCash; // 👈 实时更新内存中的钱！
+        const result = await executeTrade(investorId, symbol, action, amount, price, shares, reason, currentCash);
+        if (result) {
+            currentCash = result.newCash; // 更新内存现金
+            // 更新内存持仓
+            const oldPos = posMap.get(symbol) || { shares: 0, avg_price: 0, last_buy_price: 0 };
+            posMap.set(symbol, { ...oldPos, shares: result.newShares, last_buy_price: price });
         }
     };
 
-    // 计算当前动态总权益
-    let currentEquity = currentCash;
-    positions.forEach(p => {
-        const price = marketData[p.symbol]?.price || p.last_buy_price || 0;
-        currentEquity += (Number(p.shares) * price);
-    });
-
-    if (currentEquity > peakEquity) {
-        await supabase.from('portfolio').update({ peak_equity: currentEquity }).eq('investor_id', investorId);
-    }
-    const drawdown = peakEquity > 0 ? (peakEquity - currentEquity) / peakEquity : 0;
-
-    // 执行策略
+    // 2. 执行策略
     for (const symbol of CONFIG.SYMBOLS) {
       const data = marketData[symbol];
       if (!data) continue;
 
       const { price, changePercent } = data;
-      const pos = posMap.get(symbol);
-      const hasPos = pos && pos.shares > 0;
-      const shares = hasPos ? Number(pos.shares) : 0;
-      const lastBuyPrice = hasPos ? Number(pos.last_buy_price) : 0; 
-      const avgPrice = hasPos ? Number(pos.avg_price) : 0; 
+      const pos = posMap.get(symbol); // 使用内存中的最新持仓
+      const shares = pos ? pos.shares : 0;
+      const lastBuyPrice = pos ? pos.last_buy_price : 0; 
+      const avgPrice = pos ? pos.avg_price : 0; 
+      const hasPos = shares > 0;
 
-      // 替换所有的 executeTrade 为 trade(...)
       switch (investorId) {
         case 'leek': 
             if (!hasPos && currentCash >= 50000) await trade(symbol, 'BUY', 50000, price, 0, '韭菜建仓');
@@ -269,10 +264,21 @@ export async function runTradingBot() {
             break;
             
         case 'soldier': 
-            if (drawdown > 0.10) {
-                if (hasPos && price > lastBuyPrice * 1.02) await trade(symbol, 'SELL', (shares * price) * 0.20, price, shares, '战术撤退(熔断中)');
+            const peakEquity = Number(portfolio.peak_equity);
+            // 临时估算当前权益以计算回撤 (保守估算，忽略未遍历到的标的波动)
+            let tempEquity = currentCash;
+            posMap.forEach((p, s) => {
+                 const currentP = marketData[s]?.price || p.last_buy_price;
+                 tempEquity += p.shares * currentP;
+            });
+
+            const dd = peakEquity > 0 ? (peakEquity - tempEquity) / peakEquity : 0;
+            
+            if (dd > 0.10) {
+                if (hasPos && price > lastBuyPrice * 1.02) await trade(symbol, 'SELL', (shares * price) * 0.20, price, shares, '熔断撤退');
                 break; 
             }
+
             if (!hasPos && currentCash >= 100000) await trade(symbol, 'BUY', 100000, price, 0, '战术建仓');
             else {
                 if (price < lastBuyPrice * 0.98 && currentCash >= 10000) await trade(symbol, 'BUY', 10000, price, 0, '梯队补给');
@@ -296,15 +302,26 @@ export async function runTradingBot() {
       }
     }
 
-    // 3. 结算更新
-    await supabase.from('portfolio').update({ total_equity: currentEquity }).eq('investor_id', investorId);
+    // 3. 最终结算
+    let finalEquity = currentCash;
+    posMap.forEach((p, sym) => {
+        const price = marketData[sym]?.price || p.last_buy_price || 0;
+        finalEquity += (p.shares * price);
+    });
+
+    const peakEquity = Number(portfolio.peak_equity);
+    if (finalEquity > peakEquity) {
+        await supabase.from('portfolio').update({ peak_equity: finalEquity }).eq('investor_id', investorId);
+    }
+
+    await supabase.from('portfolio').update({ total_equity: finalEquity }).eq('investor_id', investorId);
     await supabase.from('equity_snapshots').insert({
         investor_id: investorId,
-        total_equity: currentEquity,
+        total_equity: finalEquity,
         cash_balance: currentCash,
         created_at: new Date().toISOString()
     });
     
-    console.log(`💰 [${investorId}] 结算 | 现金: ${currentCash.toFixed(0)} | 总权益: ${currentEquity.toFixed(0)}`);
+    console.log(`💰 [${investorId}] 结算 | 现金: ${currentCash.toFixed(0)} | 总权益: ${finalEquity.toFixed(0)}`);
   }
 }

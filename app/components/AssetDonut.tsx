@@ -4,8 +4,9 @@ import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 
 const COLORS = ['#3B82F6', '#10B981', '#6366F1', '#8B5CF6', '#F59E0B', '#64748B'];
 
-export default function AssetDonut({ positions, cash, total }: { positions: any[], cash: number, total: number }) {
+export default function AssetDonut({ positions, cash, total: ignoredTotal }: { positions: any[], cash: number, total: number }) {
   
+  // 1. 构造数据
   const data = [
     { name: '现金 (Cash)', value: cash, symbol: 'CASH' },
     ...positions.map(p => ({
@@ -15,9 +16,16 @@ export default function AssetDonut({ positions, cash, total }: { positions: any[
     }))
   ].sort((a, b) => b.value - a.value);
 
+  // 2. 关键修复：现场重新计算总资产，而不是使用数据库里可能过期的 total 字段
+  // 这样能确保圆环图永远是 100% 闭环的
+  const calculatedTotal = data.reduce((sum, item) => sum + item.value, 0);
+  
+  // 防止除以 0
+  const safeTotal = calculatedTotal > 0 ? calculatedTotal : 1;
+
   return (
     <div className="flex flex-col w-full">
-      {/* 上半部分：图表 (保持固定高度，否则会消失) */}
+      {/* 上半部分：图表 */}
       <div className="h-48 w-full relative -ml-2 shrink-0">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
@@ -44,17 +52,18 @@ export default function AssetDonut({ positions, cash, total }: { positions: any[
         
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="text-center">
-            <span className="text-[10px] text-slate-400 block">Total</span>
-            <span className="text-xs font-bold text-slate-700">${(total/1000).toFixed(1)}k</span>
+            <span className="text-[10px] text-slate-400 block">Total Assets</span>
+            <span className="text-xs font-bold text-slate-700">${(calculatedTotal/1000).toFixed(1)}k</span>
           </div>
         </div>
       </div>
 
-      {/* 下半部分：列表 (移除 overflow-y-auto，改为自动撑开) */}
+      {/* 下半部分：列表 */}
       <div className="mt-2 w-full px-1 pb-4">
         <div className="space-y-3">
           {data.map((item, index) => {
-            const percent = total > 0 ? (item.value / total) * 100 : 0;
+            // 使用重新计算的 safeTotal，保证占比准确
+            const percent = (item.value / safeTotal) * 100;
             const color = COLORS[index % COLORS.length];
 
             return (
