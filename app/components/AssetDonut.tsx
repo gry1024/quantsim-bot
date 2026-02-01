@@ -4,7 +4,7 @@ import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 
 const COLORS = ['#3B82F6', '#10B981', '#6366F1', '#8B5CF6', '#F59E0B', '#64748B'];
 
-export default function AssetDonut({ positions, cash, total: ignoredTotal }: { positions: any[], cash: number, total: number }) {
+export default function AssetDonut({ positions, cash, total }: { positions: any[], cash: number, total: number }) {
   
   // 1. 构造数据
   const data = [
@@ -16,12 +16,10 @@ export default function AssetDonut({ positions, cash, total: ignoredTotal }: { p
     }))
   ].sort((a, b) => b.value - a.value);
 
-  // 2. 关键修复：现场重新计算总资产，而不是使用数据库里可能过期的 total 字段
-  // 这样能确保圆环图永远是 100% 闭环的
-  const calculatedTotal = data.reduce((sum, item) => sum + item.value, 0);
-  
-  // 防止除以 0
-  const safeTotal = calculatedTotal > 0 ? calculatedTotal : 1;
+  // 2. 修正逻辑：优先使用后端传入的权威 total (Real Equity)
+  // 仅当后端数据缺失时，才降级使用前端累加值 (Fallback)
+  const calculatedSum = data.reduce((sum, item) => sum + item.value, 0);
+  const safeTotal = total > 0 ? total : (calculatedSum > 0 ? calculatedSum : 1);
 
   return (
     <div className="flex flex-col w-full">
@@ -53,7 +51,8 @@ export default function AssetDonut({ positions, cash, total: ignoredTotal }: { p
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="text-center">
             <span className="text-[10px] text-slate-400 block">Total Assets</span>
-            <span className="text-xs font-bold text-slate-700">${(calculatedTotal/1000).toFixed(1)}k</span>
+            {/* 这里现在显示的是权威的市价总资产 */}
+            <span className="text-xs font-bold text-slate-700">${(safeTotal/1000).toFixed(1)}k</span>
           </div>
         </div>
       </div>
@@ -62,8 +61,14 @@ export default function AssetDonut({ positions, cash, total: ignoredTotal }: { p
       <div className="mt-2 w-full px-1 pb-4">
         <div className="space-y-3">
           {data.map((item, index) => {
-            // 使用重新计算的 safeTotal，保证占比准确
-            const percent = (item.value / safeTotal) * 100;
+            // 计算占比：使用 component 内部 sum 还是 safeTotal?
+            // 为了让列表百分比加起来等于 100% (视觉闭环)，这里分母使用 calculatedSum 会更符合直觉；
+            // 但如果我们想体现 "占总净值的比例"，应该用 safeTotal。
+            // 鉴于目前 positions 里的价格可能滞后，为了避免出现 >100% 或极小占比的情况，
+            // 我们暂时以 "Pie Chart 自身的闭环" 为准计算百分比，但金额展示保持原样。
+            
+            const chartDenominator = calculatedSum > 0 ? calculatedSum : 1;
+            const percent = (item.value / chartDenominator) * 100;
             const color = COLORS[index % COLORS.length];
 
             return (

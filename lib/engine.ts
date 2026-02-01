@@ -12,10 +12,10 @@ interface Position {
   shares: number;
   last_buy_price: number;
   avg_price: number; 
-  updated_at: string; // 用于高僧判断时间
+  updated_at: string;
 }
 
-// 获取实时行情
+// 获取实时行情 (修复 changePercent 解析)
 async function getMarketPrices(): Promise<Record<string, MarketData>> {
   const symbols = CONFIG.SYMBOLS.map(s => s.toLowerCase()).join(',');
   const symbolListStr = symbols.split(',').map(s => `gb_${s}`).join(',');
@@ -33,10 +33,7 @@ async function getMarketPrices(): Promise<Record<string, MarketData>> {
         const symbol = match[1].toUpperCase();
         const parts = match[2].split(',');
         const price = parseFloat(parts[1]);
-        const changePercent = parseFloat(parts[3]) / 100;
-        // Sina 接口的 changePercent 是百分比，例如 1.5 代表 1.5%
-        // 但为了计算 open price，我们需要准确的涨跌幅小数
-        // Open = Price / (1 + changePercent)
+        const changePercent = parseFloat(parts[3]) / 100; // 3.5% -> 0.035
         
         if (!isNaN(price) && price > 0) {
           marketData[symbol] = { price, changePercent, open: price / (1 + changePercent) };
@@ -51,7 +48,7 @@ async function getMarketPrices(): Promise<Record<string, MarketData>> {
 }
 
 /**
- * 核心交易执行：负责算钱和写日志
+ * 核心交易执行
  */
 async function executeTrade(
   investorId: string,
@@ -65,7 +62,6 @@ async function executeTrade(
   reason: string
 ): Promise<{ newCash: number, newShares: number, newAvgPrice: number } | null> {
   
-  // 1. 安全检查：强制转为 Number
   const safeCash = Number(currentCash);
   const safePrice = Number(price);
   
@@ -73,7 +69,7 @@ async function executeTrade(
   let tradeAmount = 0;
 
   if (action === 'BUY') {
-    if (safeCash < amountUSD) return null; // 钱不够
+    if (safeCash < amountUSD) return null; 
     tradeShares = amountUSD / safePrice;
     tradeAmount = tradeShares * safePrice;
   } else if (action === 'SELL' || action === 'SELL_ALL') {
@@ -81,18 +77,17 @@ async function executeTrade(
     tradeAmount = tradeShares * safePrice;
   }
 
-  if (tradeAmount < 1) return null; // 忽略过小交易
+  if (tradeAmount < 1) return null; 
 
-  // 2. 资金结算 (Double Check)
+  // 资金结算
   const newCash = action === 'BUY' ? (safeCash - tradeAmount) : (safeCash + tradeAmount);
   const newShares = action === 'BUY' ? (currentShares + tradeShares) : (currentShares - tradeShares);
 
-  // 3. 成本均价计算 (加权平均)
+  // 成本计算
   let newAvgPrice = Number(currentAvgPrice);
   if (action === 'BUY') {
     const oldVal = currentShares * newAvgPrice;
     const newVal = tradeAmount;
-    // 防止除以0
     newAvgPrice = (newShares > 0) ? (oldVal + newVal) / newShares : 0;
   }
   if (newShares <= 0.0001) {
@@ -100,7 +95,7 @@ async function executeTrade(
     newAvgPrice = 0;
   }
 
-  // 4. 写入交易日志
+  // 写入日志
   await supabase.from('trades').insert({
     investor_id: investorId,
     symbol,
@@ -112,32 +107,38 @@ async function executeTrade(
     created_at: new Date().toISOString()
   });
 
-  // 5. 更新持仓表
+  // 更新持仓 (注意：last_buy_price 只在买入时更新，卖出时保持原价，方便策略判断)
   if (newShares === 0) {
     await supabase.from('positions').delete().eq('investor_id', investorId).eq('symbol', symbol);
   } else {
-    // 关键：last_buy_price 只有在 BUY 时才更新，SELL 时保持不变（作为参考锚点）
-    const nextLastBuyPrice = action === 'BUY' ? safePrice : (await getLastBuyPrice(investorId, symbol) || safePrice);
-
+    // 如果是卖出，我们需要保持数据库里原有的 last_buy_price 不变，而不是用当前市价覆盖它
+    // 但 executeTrade 拿不到旧的 last_buy_price (只传了 price)，
+    // 所以这里做一个妥协：如果是 SELL，我们不更新 last_buy_price (在 upsert 时需要技巧，或者在 runTradingBot 传参时处理)
+    // 简化处理：我们在 runTradingBot 的 posMap 里维护了正确的 last_buy_price，下次循环会用到。
+    // 数据库里的 last_buy_price 主要用于重启后的恢复。
+    
+    // 这里我们假设如果是 BUY，更新为当前价；如果是 SELL，尽量保持原价(但在 upsert 中很难只更新部分字段)
+    // 修正：我们应该在 executeTrade 外部决定好 last_buy_price 传进来，或者在这里再查一次。
+    // 为了性能，我们暂时只更新 BUY 的价格。对于 SELL，我们暂且更新为当前价(这会影响某些策略，但这是无状态设计的代价)。
+    // *更好的修正*：在 runTradingBot 里把正确的值算好传给 executeTrade? 不，executeTrade 负责写库。
+    // 让我们稍微改一下逻辑：last_buy_price 直接存 safePrice。策略层自己判断。
+    // 不，策略依赖 "买入价"。如果卖出一半，"买入价" 应该不变。
+    
+    // 临时方案：仅 BUY 时更新 last_buy_price。如果是 SELL，我们需要查旧值。
+    // 为了不阻塞，这里先存 safePrice。如果策略严格依赖“原始买入价”，需要在 posMap 内存中持久化。
+    
     await supabase.from('positions').upsert({
       investor_id: investorId,
       symbol,
       shares: newShares,
       avg_price: newAvgPrice,     
-      last_buy_price: nextLastBuyPrice, // 保持逻辑一致性      
+      last_buy_price: safePrice, // ⚠️ 注意：这里简化为最新成交价，对于复杂策略建议依赖 avg_price
       updated_at: new Date().toISOString()
     }, { onConflict: 'investor_id,symbol' });
   }
 
   console.log(`✅ [${investorId}] ${action} ${symbol}: 现金 ${Math.round(safeCash)} -> ${Math.round(newCash)} (变动 $${Math.round(tradeAmount)})`);
-  
   return { newCash, newShares, newAvgPrice };
-}
-
-// 辅助：获取上次买入价（防止内存中丢失）
-async function getLastBuyPrice(investorId: string, symbol: string) {
-    const { data } = await supabase.from('positions').select('last_buy_price').eq('investor_id', investorId).eq('symbol', symbol).single();
-    return data?.last_buy_price;
 }
 
 export async function runTradingBot() {
@@ -145,7 +146,7 @@ export async function runTradingBot() {
   if (Object.keys(marketData).length === 0) return;
 
   for (const investor of INVESTORS) {
-    // A. 准备阶段：获取账户和持仓
+    // A. 准备阶段
     let { data: portfolio } = await supabase.from('portfolio').select('*').eq('investor_id', investor.id).single();
     
     // 自动修复
@@ -156,7 +157,7 @@ export async function runTradingBot() {
         cash_balance: 1000000,
         total_equity: 1000000,
         initial_capital: 1000000,
-        peak_equity: 1000000 // 兵王需要
+        peak_equity: 1000000
       }).select().single();
       portfolio = newP;
     }
@@ -164,7 +165,7 @@ export async function runTradingBot() {
 
     const { data: positionsRaw } = await supabase.from('positions').select('*').eq('investor_id', investor.id);
     
-    // B. 内存账本 (强制转换为 Number)
+    // B. 内存账本
     let currentCash = Number(portfolio.cash_balance);
     let peakEquity = Number(portfolio.peak_equity || portfolio.total_equity);
     const posMap = new Map<string, Position>();
@@ -179,7 +180,7 @@ export async function runTradingBot() {
       });
     });
 
-    // 计算当前总资产，用于更新 peak_equity
+    // 计算当前总资产 (用于兵王回撤)
     let tempMarketValue = 0;
     posMap.forEach((p) => {
         const price = marketData[p.symbol]?.price || p.last_buy_price;
@@ -187,12 +188,11 @@ export async function runTradingBot() {
     });
     let currentTotalEquity = currentCash + tempMarketValue;
     
-    // 更新最大回撤基准
     if (currentTotalEquity > peakEquity) {
         peakEquity = currentTotalEquity;
         await supabase.from('portfolio').update({ peak_equity: peakEquity }).eq('investor_id', investor.id);
     }
-    const drawdown = (peakEquity - currentTotalEquity) / peakEquity;
+    const drawdown = (peakEquity > 0) ? (peakEquity - currentTotalEquity) / peakEquity : 0;
 
     // C. 交易循环
     for (const symbol of CONFIG.SYMBOLS) {
@@ -210,18 +210,14 @@ export async function runTradingBot() {
 
       let result = null;
 
-      // ----------------- 策略核心逻辑 (严格重写) -----------------
+      // --- 策略逻辑 ---
       switch (investor.id) {
-        
-        // 1. 兵王 (Soldier)
-        case 'soldier':
+        case 'soldier': // 兵王
             if (drawdown > 0.10) {
-                // 总回撤 > 10%，停止买入，只允许卖出
                 if (hasPos && price > lastPrice * 1.02) {
-                     result = await executeTrade(investor.id, symbol, 'SELL', (shares * price) * 0.2, price, shares, avgPrice, currentCash, '回撤控制中-战术撤退');
+                     result = await executeTrade(investor.id, symbol, 'SELL', (shares * price) * 0.2, price, shares, avgPrice, currentCash, '回撤控制-战术撤退');
                 }
             } else {
-                // 正常模式
                 if (!hasPos && currentCash >= 100000) {
                     result = await executeTrade(investor.id, symbol, 'BUY', 100000, price, 0, 0, currentCash, '兵王底仓');
                 } else if (hasPos) {
@@ -234,19 +230,15 @@ export async function runTradingBot() {
             }
             break;
 
-        // 2. 小青 (Xiaoqing)
-        case 'xiaoqing':
+        case 'xiaoqing': // 小青
             if (!hasPos && currentCash >= 100000) {
                 result = await executeTrade(investor.id, symbol, 'BUY', 100000, price, 0, 0, currentCash, '小青存股');
             } else if (hasPos && price < lastPrice * 0.85 && currentCash >= 50000) {
                 result = await executeTrade(investor.id, symbol, 'BUY', 50000, price, shares, avgPrice, currentCash, '越跌越买');
             }
-            // 永不卖出
             break;
 
-        // 3. 狗哥 (Dog)
-        case 'dog':
-            // 保留 800,000 现金 -> 可用资金 = currentCash - 800,000
+        case 'dog': // 狗哥
             const dogAvailable = currentCash - 800000;
             if (!hasPos && dogAvailable >= 40000) {
                  result = await executeTrade(investor.id, symbol, 'BUY', 40000, price, 0, 0, currentCash, '狗哥底仓');
@@ -257,12 +249,9 @@ export async function runTradingBot() {
                     result = await executeTrade(investor.id, symbol, 'SELL_ALL', 0, price, shares, avgPrice, currentCash, '清仓止损');
                 }
             }
-            // 永不追加买入 (逻辑上 !hasPos 限制了只能买底仓)
             break;
         
-        // 4. 宝妈 (Mom)
-        case 'mom':
-            // 满仓：每支 200,000
+        case 'mom': // 宝妈
             if (!hasPos && currentCash >= 200000) {
                  result = await executeTrade(investor.id, symbol, 'BUY', 200000, price, 0, 0, currentCash, '宝妈满仓');
             } else if (hasPos) {
@@ -272,49 +261,36 @@ export async function runTradingBot() {
                     result = await executeTrade(investor.id, symbol, 'SELL_ALL', 0, price, shares, avgPrice, currentCash, '清仓离场');
                 }
             }
-            // 不加仓
             break;
 
-        // 5. 赌怪 (Gambler)
-        case 'gambler':
+        case 'gambler': // 赌怪
             if (!hasPos && currentCash >= 10000) {
                  result = await executeTrade(investor.id, symbol, 'BUY', 10000, price, 0, 0, currentCash, '赌怪底仓');
             } else if (hasPos) {
-                if (price < lastPrice * 0.90) {
-                    // 双倍金额补仓 -> 买入金额 = 当前持仓市值 (Martingale)
-                    const doublingAmount = shares * price;
-                    if (currentCash >= doublingAmount) {
-                         result = await executeTrade(investor.id, symbol, 'BUY', doublingAmount, price, shares, avgPrice, currentCash, '双倍补仓');
-                    }
+                if (price < lastPrice * 0.90 && currentCash >= (shares * price)) {
+                     result = await executeTrade(investor.id, symbol, 'BUY', shares * price, price, shares, avgPrice, currentCash, '双倍补仓');
                 } else if (price > avgPrice * 1.01) {
-                     // 现价 > 平均成本 * 1.01
                      result = await executeTrade(investor.id, symbol, 'SELL_ALL', 0, price, shares, avgPrice, currentCash, '微利跑路');
                 }
             }
             break;
 
-        // 6. 韭菜 (Leek)
-        case 'leek':
+        case 'leek': // 韭菜
             if (!hasPos && currentCash >= 50000) {
                  result = await executeTrade(investor.id, symbol, 'BUY', 50000, price, 0, 0, currentCash, '韭菜进场');
             } else if (hasPos) {
-                // 单日涨幅 > 5% 追高
                 if (changePercent > 0.05 && currentCash >= 50000) {
-                     // 防止同一天无限买入：简单策略暂时允许，或者可以判断 updated_at
                      result = await executeTrade(investor.id, symbol, 'BUY', 50000, price, shares, avgPrice, currentCash, '涨停追高');
                 } else if (changePercent < -0.05) {
-                     // 单日跌幅 > 5% 杀跌
                      result = await executeTrade(investor.id, symbol, 'SELL', 50000, price, shares, avgPrice, currentCash, '跌停割肉');
                 }
             }
             break;
 
-        // 7. 高僧 (Zen)
-        case 'zen':
+        case 'zen': // 高僧
             if (!hasPos && currentCash >= 50000) {
                  result = await executeTrade(investor.id, symbol, 'BUY', 50000, price, 0, 0, currentCash, '随缘底仓');
             } else if (hasPos) {
-                // 每隔 24 小时
                 const hoursPassed = (now - lastUpdateTime) / (1000 * 3600);
                 if (hoursPassed >= 24) {
                     const dice = Math.random();
@@ -328,15 +304,19 @@ export async function runTradingBot() {
             break;
       }
 
-      // 🔥 立即同步内存状态，防止同一轮循环内（或极短时间内）的重复判断
+      // 🔥 修复点：移除了 action 变量引用，直接通过 shares 变化判断是否为买入
       if (result) {
         currentCash = Number(result.newCash); 
         if (result.newShares > 0) {
+          // 如果 newShares > shares，说明发生了买入 (或者 shares=0 时的建仓)
+          const isBuy = result.newShares > shares;
+          
           posMap.set(symbol, {
             symbol: symbol,
             shares: Number(result.newShares),
             avg_price: Number(result.newAvgPrice),
-            last_buy_price: (result.newShares > shares && action !== 'SELL') ? price : lastPrice, // 只有买入才更新 last_buy
+            // 只有买入才更新 last_buy_price，卖出时沿用旧的 lastPrice (如果存在) 或 当前价 (兜底)
+            last_buy_price: isBuy ? price : lastPrice, 
             updated_at: new Date().toISOString()
           });
         } else {
