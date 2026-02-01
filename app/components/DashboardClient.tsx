@@ -6,17 +6,16 @@ import { STOCK_NAMES } from '../../lib/constants';
 import { 
   TrendingUp, TrendingDown, Activity, Wallet, 
   Clock, RefreshCcw, Layers, BarChart3, PieChart,
-  LayoutDashboard, Trophy // 👈 引入奖杯图标
+  LayoutDashboard, Trophy
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import EquityChart from './EquityChart';
 import MiniCandleChart from './MiniCandleChart';
 import AssetDonut from './AssetDonut';
-import LeaderboardView from './LeaderboardView'; // 👈 替换 StrategyView
+import LeaderboardView from './LeaderboardView';
 import InvestorSelector from './InvestorSelector';
 
-// ... (Trade 和 Position 接口定义保持不变，此处省略以节省空间) ...
 interface Trade {
   id: number;
   symbol: string;
@@ -28,6 +27,7 @@ interface Trade {
   created_at: string;
   quantity?: number; 
 }
+
 interface Position {
   id: number;
   symbol: string;
@@ -43,7 +43,7 @@ interface Position {
 
 interface DashboardClientProps {
   defaultInvestorId: string;
-  initialAllPortfolios: any[]; // 👈 新增
+  initialAllPortfolios: any[];
   initialPortfolio: any;
   initialPositions: any[];
   initialTrades: any[];
@@ -64,7 +64,6 @@ export default function DashboardClient({
     const [currentInvestorId, setCurrentInvestorId] = useState(defaultInvestorId);
     const [activeView, setActiveView] = useState<'monitor' | 'leaderboard'>('monitor');
     
-    // 🔧 修复：增加 || [] 默认值，防止传入 undefined 导致崩溃
     const [allPortfolios, setAllPortfolios] = useState(initialAllPortfolios || []); 
     const [portfolio, setPortfolio] = useState(initialPortfolio || {});
     const [positions, setPositions] = useState<Position[]>(initialPositions || []);
@@ -77,15 +76,12 @@ export default function DashboardClient({
   const fetchInvestorData = async (id: string) => {
     setIsLive(false);
     
-    // 1. 获取当前视角的持仓、交易、曲线
     const [posRes, trdRes, snapRes] = await Promise.all([
       supabase.from('positions').select('*').eq('investor_id', id),
       supabase.from('trades').select('*').eq('investor_id', id).order('created_at', { ascending: false }).limit(50),
       supabase.from('equity_snapshots').select('*').eq('investor_id', id).order('created_at', { ascending: true }).limit(100)
     ]);
 
-    // 2. 更新状态
-    // 注意：Portfolio 数据我们从 allPortfolios 里直接拿最新的，不用重新 fetch 单条
     const targetPortfolio = allPortfolios.find(p => p.investor_id === id);
     if (targetPortfolio) setPortfolio(targetPortfolio);
 
@@ -106,11 +102,10 @@ export default function DashboardClient({
     fetchInvestorData(id);
   };
 
-  // 处理排行榜点击跳转
   const handleLeaderboardSelect = (id: string) => {
     setCurrentInvestorId(id);
     fetchInvestorData(id);
-    setActiveView('monitor'); // 自动切回控制台看详情
+    setActiveView('monitor');
   };
 
   const initialCapital = portfolio?.initial_capital || 1000000;
@@ -121,21 +116,16 @@ export default function DashboardClient({
   const isProfit = pnl >= 0;
 
   useEffect(() => {
-    // 订阅全局数据
     const channel = supabase.channel(`dashboard-global`);
     
     channel
-      // 1. 监听【所有】Portfolio 更新，以驱动排行榜实时跳动
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'portfolio' }, (payload: any) => {
           const updated = payload.new;
-          // 更新总表
           setAllPortfolios(prev => prev.map(p => p.investor_id === updated.investor_id ? updated : p));
-          // 如果更新的是当前视角，同步更新当前 portfolio
           if (updated.investor_id === currentInvestorId) {
              setPortfolio(updated);
           }
       })
-      // 2. 下面的表需要过滤 investor_id，否则会收到别人的交易推送
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'equity_snapshots', filter: `investor_id=eq.${currentInvestorId}` }, (payload: any) => {
           const newPoint = { time: payload.new.created_at.split('T')[0], value: payload.new.total_equity };
           setEquityData(prev => [...prev, newPoint]);
@@ -148,9 +138,7 @@ export default function DashboardClient({
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'trades', filter: `investor_id=eq.${currentInvestorId}` }, (payload: any) => {
           setTrades((prev) => [payload.new, ...prev]);
       })
-      // K线是公用的
       .on('postgres_changes', { event: '*', schema: 'public', table: 'market_candles' }, (payload: any) => {
-          // ... (K线更新逻辑保持不变) ...
           const newCandle = payload.new as any;
           if (!newCandle || !newCandle.symbol) return;
           setHistoryMap((prevMap) => {
@@ -170,9 +158,8 @@ export default function DashboardClient({
       .subscribe((status: string) => { if (status === 'SUBSCRIBED') setIsLive(true); });
 
     return () => { supabase.removeChannel(channel); };
-  }, [currentInvestorId]); // 当 currentInvestorId 变化时，重新订阅专属频道
+  }, [currentInvestorId]);
 
-  // ... (图表数据构造逻辑保持不变) ...
   const finalChartData = [...(equityData || [])];
   const todayStr = new Date().toISOString().split('T')[0];
   if (finalChartData.length > 0) {
@@ -186,7 +173,6 @@ export default function DashboardClient({
     finalChartData.push({ time: todayStr, value: currentEquity });
   }
 
-  // ... (Position 标准化逻辑保持不变) ...
   const normalizedPositions = positions.map(p => ({
       ...p,
       quantity: p.shares ?? p.quantity ?? 0,
@@ -215,7 +201,6 @@ export default function DashboardClient({
           <button onClick={() => setActiveView('monitor')} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeView === 'monitor' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-600 hover:bg-slate-50'}`}>
             <LayoutDashboard size={18} /> 控制台
           </button>
-          {/* 👇 修改按钮：策略说明 -> 排行榜 */}
           <button onClick={() => setActiveView('leaderboard')} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeView === 'leaderboard' ? 'bg-yellow-500 text-white shadow-md' : 'text-slate-600 hover:bg-slate-50'}`}>
             <Trophy size={18} /> 资产排行榜
           </button>
@@ -223,7 +208,6 @@ export default function DashboardClient({
 
         <div className="p-6 space-y-6 flex-1 overflow-y-auto custom-scrollbar">
           <InvestorSelector current={currentInvestorId} onChange={handleInvestorChange} />
-          {/* ... (侧边栏底部信息保持不变) ... */}
            <div>
             <div className="text-xs font-semibold text-slate-400 uppercase mb-2 flex items-center gap-1">
               <Wallet size={14} /> 账户总净值 (USD)
@@ -286,18 +270,15 @@ export default function DashboardClient({
 
         <div className="flex-1 overflow-y-auto p-4 md:p-8 scroll-smooth pb-24 md:pb-8">
           {activeView === 'leaderboard' ? (
-            // 👇 替换为排行榜组件
             <LeaderboardView 
                 portfolios={allPortfolios} 
                 currentInvestorId={currentInvestorId}
                 onSelect={handleLeaderboardSelect} 
             />
           ) : (
-            // 控制台视图保持不变
             <>
               <section className="mb-6 md:mb-8 hidden md:block"><EquityChart data={finalChartData} /></section>
               <section className="mb-8">
-                {/* ... (持仓列表代码保持不变) ... */}
                 <div className="flex items-center justify-between mb-4 px-1">
                   <h3 className="font-bold text-slate-700 flex items-center gap-2 text-sm md:text-base">
                     <BarChart3 size={18} /> 持仓监控 ({normalizedPositions.length})
@@ -306,16 +287,70 @@ export default function DashboardClient({
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
                   {normalizedPositions?.map((pos: any) => {
                     const avgCost = pos.average_cost || 0;
-                    const quantity = pos.quantity || 0;
+                    const quantity = pos.quantity || 0; // 当前持仓 (Current)
                     const investedPrincipal = avgCost * quantity;
                     
                     const realHistory = historyMap[pos.symbol] || [];
                     let currentPrice = pos.last_action_price || avgCost;
 
+                    // ==========================================
+                    // 核心修改：当日盈亏逻辑 (Daily PnL Logic)
+                    // ==========================================
+                    let dailyChangePercent = 0;
+                    let dailyPnL = 0;
+                    let hasDailyData = false;
+                    
+                    // 1. 确定当前价格 (Current Price)
                     if (realHistory.length > 0) {
                         const lastCandle = realHistory[realHistory.length - 1];
-                        currentPrice = lastCandle.close; 
+                        currentPrice = lastCandle.close;
                     }
+
+                    // 2. 确定昨日收盘价 (Yesterday Close)
+                    // 假设 realHistory 最后一个数据是实时的/今天的，那么倒数第二个是昨天的
+                    let prevClose = 0;
+                    if (realHistory.length >= 2) {
+                        prevClose = realHistory[realHistory.length - 2].close;
+                        hasDailyData = true;
+                    } else if (realHistory.length === 1) {
+                         // 只有一天数据，可能是新股或数据不足，暂用 Open 代替 PrevClose
+                         prevClose = realHistory[0].open;
+                         hasDailyData = true;
+                    }
+
+                    // 3. 计算昨日持仓数量 (Yesterday Shares)
+                    // 逻辑：昨日持仓 = 当前持仓 - 今日买入 + 今日卖出
+                    // 只有昨日持仓的部分，才参与当日盈亏计算（场景1：新买入不计算；场景4：卖出部分也计算）
+                    const todayStr = new Date().toISOString().split('T')[0];
+                    const todayTrades = trades.filter(t => 
+                        t.symbol === pos.symbol && 
+                        t.created_at.startsWith(todayStr)
+                    );
+
+                    let todayBuyQty = 0;
+                    let todaySellQty = 0;
+                    todayTrades.forEach(t => {
+                        const q = t.shares ?? t.quantity ?? 0;
+                        if (t.action === 'BUY') todayBuyQty += q;
+                        if (t.action === 'SELL') todaySellQty += q;
+                    });
+
+                    const yesterdayShares = quantity - todayBuyQty + todaySellQty;
+
+                    // 4. 执行计算
+                    if (hasDailyData && prevClose > 0) {
+                        // 涨跌幅
+                        dailyChangePercent = (currentPrice - prevClose) / prevClose * 100;
+                        
+                        // 当日盈亏：只计算昨日留存的部分
+                        // 如果 yesterdayShares <= 0 (即场景1：全是今天新买的)，则 DailyPnL = 0
+                        if (yesterdayShares > 0) {
+                            dailyPnL = yesterdayShares * (currentPrice - prevClose);
+                        } else {
+                            dailyPnL = 0;
+                        }
+                    }
+                    // ==========================================
 
                     const marketValue = currentPrice * quantity;
                     const totalReturn = marketValue - investedPrincipal;
@@ -336,21 +371,40 @@ export default function DashboardClient({
                               <div className="text-xl md:text-2xl font-bold text-slate-800 transition-colors duration-300 font-mono">
                                 ${Number(currentPrice).toFixed(2)}
                               </div>
+                              {/* 右上角：今日涨跌幅 */}
+                              {hasDailyData && (
+                                <div className={`text-xs font-medium mt-1 ${dailyChangePercent >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                                    {dailyChangePercent >= 0 ? '+' : ''}{dailyChangePercent.toFixed(2)}% (Today)
+                                </div>
+                              )}
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-2 gap-2 py-2 bg-slate-50/50 rounded-lg px-2">
+                          {/* 底部数据网格 */}
+                          <div className="grid grid-cols-3 gap-2 py-2 bg-slate-50/50 rounded-lg px-2">
                             <div className="flex flex-col">
                                 <span className="text-[10px] text-slate-400 mb-0.5">持仓成本</span>
                                 <span className="text-xs md:text-sm font-semibold text-slate-700">
-                                    ${Math.round(investedPrincipal).toLocaleString()} <span className="text-slate-400 font-normal">(@{Number(avgCost).toFixed(1)})</span>
+                                    ${Math.round(investedPrincipal).toLocaleString()}
                                 </span>
                             </div>
+                            
+                            {/* 中间列：当日盈亏 (使用了新逻辑) */}
+                            <div className="flex flex-col text-center">
+                                <span className="text-[10px] text-slate-400 mb-0.5">当日盈亏</span>
+                                <div className={`text-xs md:text-sm font-semibold ${dailyPnL >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                                   {hasDailyData ? (
+                                      <>
+                                        {dailyPnL >= 0 ? '+' : ''}{Math.round(dailyPnL).toLocaleString()}
+                                      </>
+                                   ) : <span className="text-slate-300">-</span>}
+                                </div>
+                            </div>
+
                             <div className="flex flex-col text-right">
                                 <span className="text-[10px] text-slate-400 mb-0.5">总收益</span>
                                 <div className={`text-xs md:text-sm font-semibold ${totalReturn >= 0 ? 'text-red-500' : 'text-green-500'}`}>
                                     {totalReturn >= 0 ? '+' : ''}{Math.round(totalReturn).toLocaleString()}
-                                    <span className="text-[9px] ml-0.5 opacity-70">({totalReturnPercent.toFixed(1)}%)</span>
                                 </div>
                             </div>
                           </div>
@@ -367,7 +421,7 @@ export default function DashboardClient({
                 </div>
               </section>
 
-              {/* 交易日志部分保持不变 */}
+              {/* 交易日志 */}
               <section>
                  <div className="flex items-center justify-between mb-4 px-1"><h3 className="font-bold text-slate-700 flex items-center gap-2 text-sm md:text-base"><Clock size={18} /> 交易日志</h3></div>
                  <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
@@ -416,7 +470,7 @@ export default function DashboardClient({
           )}
         </div>
         
-        {/* Mobile Navbar - Updated Buttons */}
+        {/* Mobile Navbar */}
         <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-6 py-2 flex justify-between items-center z-50 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] pb-safe">
           <button onClick={() => setActiveView('monitor')} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition ${activeView === 'monitor' ? 'text-slate-900' : 'text-slate-400 hover:text-slate-600'}`}>
             <LayoutDashboard size={20} className={activeView === 'monitor' ? 'fill-slate-900/10' : ''} />

@@ -37,12 +37,18 @@ export default function MiniCandleChart({ data }: MiniCandleChartProps) {
     const chart = createChart(chartContainerRef.current, {
       layout: {
         background: { type: ColorType.Solid, color: 'transparent' },
-        textColor: '#64748B',
+        textColor: '#94A3B8', // 调整文字颜色使其更柔和
         fontFamily: "'PingFang SC', 'Microsoft YaHei', sans-serif",
       },
       width: containerWidth,
       height: containerHeight || 200,
       
+      // 💡 新增：本地化配置，解决日期显示混乱问题
+      localization: {
+        locale: 'zh-CN',
+        dateFormat: 'yyyy-MM-dd',
+      },
+
       grid: {
         vertLines: { visible: false },
         horzLines: { color: 'rgba(42, 46, 57, 0.05)', style: 1 },
@@ -91,6 +97,12 @@ export default function MiniCandleChart({ data }: MiniCandleChartProps) {
         rightOffset: 5,
         fixLeftEdge: true,
         fixRightEdge: true,
+        // 💡 新增：自定义刻度格式化，只显示 月/日，避免混乱
+        tickMarkFormatter: (time: any, tickMarkType: any, locale: any) => {
+          const date = new Date(time);
+          // 简单格式化为 MM/DD
+          return `${date.getMonth() + 1}/${date.getDate()}`;
+        },
       },
     });
 
@@ -114,7 +126,6 @@ export default function MiniCandleChart({ data }: MiniCandleChartProps) {
           width: chartContainerRef.current.clientWidth,
           height: chartContainerRef.current.clientHeight
         });
-        // 💡 额外优化：调整窗口大小时也自动适配内容
         chartRef.current.timeScale().fitContent(); 
       }
     };
@@ -136,8 +147,6 @@ export default function MiniCandleChart({ data }: MiniCandleChartProps) {
       );
       seriesRef.current.setData(uniqueData as any);
       
-      // ✅ 关键修复：每次数据加载后，强制让图表适配内容
-      // 这样用户打开即看到完整的、包含最新 K 线的视图，无需手动缩放
       if (chartRef.current) {
         chartRef.current.timeScale().fitContent(); 
       }
