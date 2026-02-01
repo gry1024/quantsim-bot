@@ -1,6 +1,7 @@
+// lib/market-service.ts
+
 import { supabase } from './config';
 
-// 定义接口，确保类型安全
 interface CandleData {
   id: string;
   symbol: string;
@@ -13,16 +14,16 @@ interface CandleData {
 }
 
 /**
- * 核心同步逻辑：从新浪财经抓取美股历史 K 线
- * 稳健性重写版
+ * 核心同步逻辑
+ * @param symbol 股票代码
+ * @param days 需要同步的交易日天数 (默认 260 天 ≈ 1年)
  */
-export async function syncSymbolHistory(symbol: string) {
-  const cleanSymbol = symbol.toUpperCase(); 
+export async function syncSymbolHistory(symbol: string, days: number = 260) {
+  const cleanSymbol = symbol.toUpperCase();
   
   try {
-    console.log(`📊 [${cleanSymbol}] 开始同步 K 线数据...`);
+    console.log(`📊 [${cleanSymbol}] 开始同步最近 ${days} 天 K 线...`);
 
-    // 1. 请求新浪财经接口
     const url = `https://stock.finance.sina.com.cn/usstock/api/jsonp.php/cb/US_MinKService.getDailyK?symbol=${cleanSymbol.toLowerCase()}`;
     
     const res = await fetch(url, {
@@ -33,12 +34,10 @@ export async function syncSymbolHistory(symbol: string) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     
     const text = await res.text();
-
-    // 2. 暴力正则提取
     const match = text.match(/\[.*\]/);
     
     if (!match) {
-      console.warn(`⚠️ [${cleanSymbol}] 接口返回内容为空或格式异常`);
+      console.warn(`⚠️ [${cleanSymbol}] 接口返回为空`);
       return;
     }
 
@@ -50,15 +49,10 @@ export async function syncSymbolHistory(symbol: string) {
       return;
     }
 
-    if (!Array.isArray(rawData) || rawData.length === 0) {
-      console.warn(`⚠️ [${cleanSymbol}] 只有空数组`);
-      return;
-    }
+    if (!Array.isArray(rawData) || rawData.length === 0) return;
 
-    // 3. 数据清洗与映射
     const candles: CandleData[] = rawData.map((item: any) => {
       const dateStr = item.d; 
-      
       return {
         id: `${cleanSymbol}_${dateStr}`,
         symbol: cleanSymbol,
@@ -70,27 +64,21 @@ export async function syncSymbolHistory(symbol: string) {
         volume: parseInt(item.v) || 0
       };
     })
-    .filter(c => 
-      c.date && 
-      !isNaN(c.close) && 
-      c.close > 0
-    );
-    // 🚩 修改：删除了 .slice(-60)，现在保存所有历史数据
+    .filter(c => c.date && !isNaN(c.close) && c.close > 0)
+    // ✅ 修改核心：使用传入的 days 参数进行截取
+    .slice(-days);
 
     if (candles.length === 0) return;
 
-    // 4. 写入 Supabase
     const { error } = await supabase
       .from('market_candles')
       .upsert(candles, { onConflict: 'id' });
 
     if (error) {
       console.error(`❌ [${cleanSymbol}] 写入 DB 失败:`, error.message);
-    } else {
-      // console.log(`✅ [${cleanSymbol}] 同步成功 (${candles.length} 条)`);
     }
 
   } catch (err: any) {
-    console.error(`❌ [${cleanSymbol}] 致命错误:`, err.message);
+    console.error(`❌ [${cleanSymbol}] 错误:`, err.message);
   }
 }
