@@ -1,13 +1,12 @@
 import { supabase, CONFIG, INVESTORS } from './config';
 
-// 1. 定义精确的接口
+// 1. 强类型接口定义
 interface MarketData {
   price: number;
   open: number; 
   changePercent: number;
 }
 
-// 内存中的持仓对象
 interface Position {
   symbol: string;
   shares: number;
@@ -15,7 +14,7 @@ interface Position {
   avg_price: number; 
 }
 
-// 获取行情 (增加详细日志)
+// 获取实时行情
 async function getMarketPrices(): Promise<Record<string, MarketData>> {
   const symbols = CONFIG.SYMBOLS.map(s => s.toLowerCase()).join(',');
   const symbolListStr = symbols.split(',').map(s => `gb_${s}`).join(',');
@@ -26,7 +25,6 @@ async function getMarketPrices(): Promise<Record<string, MarketData>> {
     const text = await res.text();
     const marketData: Record<string, MarketData> = {};
     
-    // 解析返回的字符串
     const lines = text.split('\n');
     lines.forEach((line: string) => {
       const match = line.match(/gb_([a-z]+)="([^"]+)"/);
@@ -35,22 +33,11 @@ async function getMarketPrices(): Promise<Record<string, MarketData>> {
         const parts = match[2].split(',');
         const price = parseFloat(parts[1]);
         const changePercent = parseFloat(parts[3]) / 100;
-        
-        // 只有价格有效才记录
         if (!isNaN(price) && price > 0) {
           marketData[symbol] = { price, changePercent, open: price / (1 + changePercent) };
         }
       }
     });
-
-    // 🔍 打印行情获取结果，让你知道并没有失败
-    const gotKeys = Object.keys(marketData);
-    if (gotKeys.length > 0) {
-      console.log(`📊 行情获取成功: 抓取到 ${gotKeys.length} 只股票 (${gotKeys.join(', ')})`);
-    } else {
-      console.warn(`⚠️ 行情接口返回空数据！请求URL: ${url}`);
-    }
-
     return marketData;
   } catch (e: any) {
     console.error(`❌ 行情网络请求失败: ${e.message}`);
@@ -59,7 +46,7 @@ async function getMarketPrices(): Promise<Record<string, MarketData>> {
 }
 
 /**
- * 核心交易函数
+ * 核心交易执行：负责算钱和写日志
  */
 async function executeTrade(
   investorId: string,
@@ -73,50 +60,54 @@ async function executeTrade(
   reason: string
 ): Promise<{ newCash: number, newShares: number, newAvgPrice: number } | null> {
   
+  // 1. 安全检查：强制转为 Number，防止字符串运算
+  const safeCash = Number(currentCash);
+  const safePrice = Number(price);
+  
   let tradeShares = 0;
   let tradeAmount = 0;
 
-  // 1. 计算
   if (action === 'BUY') {
-    if (currentCash < amountUSD) return null; 
-    tradeShares = amountUSD / price;
-    tradeAmount = tradeShares * price; 
+    if (safeCash < amountUSD) return null; // 钱不够
+    tradeShares = amountUSD / safePrice;
+    tradeAmount = tradeShares * safePrice;
   } else if (action === 'SELL' || action === 'SELL_ALL') {
-    tradeShares = action === 'SELL_ALL' ? currentShares : Math.min(amountUSD / price, currentShares);
-    tradeAmount = tradeShares * price;
+    tradeShares = action === 'SELL_ALL' ? currentShares : Math.min(amountUSD / safePrice, currentShares);
+    tradeAmount = tradeShares * safePrice;
   }
 
-  if (tradeAmount < 1) return null; 
+  if (tradeAmount < 1) return null; // 忽略过小交易
 
-  // 2. 结算
-  const newCash = action === 'BUY' ? currentCash - tradeAmount : currentCash + tradeAmount;
-  const newShares = action === 'BUY' ? currentShares + tradeShares : currentShares - tradeShares;
+  // 2. 资金结算 (Double Check)
+  // 买入：现金减少；卖出：现金增加
+  const newCash = action === 'BUY' ? (safeCash - tradeAmount) : (safeCash + tradeAmount);
+  const newShares = action === 'BUY' ? (currentShares + tradeShares) : (currentShares - tradeShares);
 
-  // 3. 成本计算
-  let newAvgPrice = currentAvgPrice;
+  // 3. 成本均价计算 (加权平均)
+  let newAvgPrice = Number(currentAvgPrice);
   if (action === 'BUY') {
-    const oldCost = currentShares * currentAvgPrice;
-    const newCost = tradeAmount;
-    newAvgPrice = (oldCost + newCost) / newShares;
+    const oldVal = currentShares * newAvgPrice;
+    const newVal = tradeAmount;
+    newAvgPrice = (oldVal + newVal) / newShares;
   }
   if (newShares <= 0.0001) {
     // newShares = 0;
     newAvgPrice = 0;
   }
 
-  // 4. 写日志
+  // 4. 写入交易日志
   await supabase.from('trades').insert({
     investor_id: investorId,
     symbol,
     action: action === 'SELL_ALL' ? 'SELL' : action,
     shares: tradeShares,
-    price,
+    price: safePrice,
     amount: tradeAmount,
     reason,
     created_at: new Date().toISOString()
   });
 
-  // 5. 更新持仓
+  // 5. 更新持仓表
   if (newShares === 0) {
     await supabase.from('positions').delete().eq('investor_id', investorId).eq('symbol', symbol);
   } else {
@@ -125,12 +116,13 @@ async function executeTrade(
       symbol,
       shares: newShares,
       avg_price: newAvgPrice,     
-      last_buy_price: price,      
+      last_buy_price: safePrice,      
       updated_at: new Date().toISOString()
     }, { onConflict: 'investor_id,symbol' });
   }
 
-  console.log(`✅ [${investorId}] 交易执行: ${action} ${symbol} $${tradeAmount.toFixed(0)} (理由: ${reason})`);
+  console.log(`✅ [${investorId}] ${action} ${symbol}: 现金 ${Math.round(safeCash)} -> ${Math.round(newCash)} (变动 $${Math.round(tradeAmount)})`);
+  
   return { newCash, newShares, newAvgPrice };
 }
 
@@ -138,33 +130,31 @@ export async function runTradingBot() {
   const marketData = await getMarketPrices();
   if (Object.keys(marketData).length === 0) return;
 
-  // 遍历每一位投资者
   for (const investor of INVESTORS) {
     // A. 准备阶段
     let { data: portfolio } = await supabase.from('portfolio').select('*').eq('investor_id', investor.id).single();
     
-    // 🛠️ 自动修复：如果数据库里没有这个人，自动创建！
+    // 自动修复缺失账户
     if (!portfolio) {
-      console.log(`🔧 [${investor.name}] 账户不存在，正在自动初始化...`);
-      const { data: newPortfolio, error } = await supabase.from('portfolio').insert({
+      console.log(`🔧 [${investor.name}] 初始化账户...`);
+      const { data: newP } = await supabase.from('portfolio').insert({
         investor_id: investor.id,
         cash_balance: 1000000,
         total_equity: 1000000,
         initial_capital: 1000000
       }).select().single();
-      
-      if (error || !newPortfolio) {
-        console.error(`❌ 无法创建投资者 ${investor.id}:`, error?.message);
-        continue;
-      }
-      portfolio = newPortfolio;
+      portfolio = newP;
     }
+
+    if (!portfolio) continue;
 
     const { data: positionsRaw } = await supabase.from('positions').select('*').eq('investor_id', investor.id);
     
-    // B. 内存初始化
+    // B. 内存账本 (这是最关键的一步，所有计算基于内存，防止数据库延迟)
+    // 强制转换为 Number 类型
     let currentCash = Number(portfolio.cash_balance);
     const posMap = new Map<string, Position>();
+    
     (positionsRaw || []).forEach((p: any) => {
       posMap.set(p.symbol, {
         symbol: p.symbol,
@@ -174,8 +164,7 @@ export async function runTradingBot() {
       });
     });
 
-    // C. 交易阶段
-    let actionCount = 0;
+    // C. 交易循环
     for (const symbol of CONFIG.SYMBOLS) {
       const data = marketData[symbol];
       if (!data) continue;
@@ -250,7 +239,6 @@ export async function runTradingBot() {
           
         case 'zen':
            const dice = Math.random();
-           // 调高概率以便测试，原本 0.95
            if (!hasPos && currentCash >= 100000 && dice > 0.80) {
               result = await executeTrade(investor.id, symbol, 'BUY', 100000, price, 0, 0, currentCash, '缘分到了');
            } else if (hasPos && dice < 0.05) {
@@ -271,16 +259,15 @@ export async function runTradingBot() {
           break;
       }
 
-      // 更新内存
+      // 🔥 关键修复：立即更新内存中的现金和持仓
       if (result) {
-        actionCount++;
-        currentCash = result.newCash; 
+        currentCash = Number(result.newCash); // 确保是数字
         if (result.newShares > 0) {
           posMap.set(symbol, {
             symbol: symbol,
-            shares: result.newShares,
-            avg_price: result.newAvgPrice,
-            last_buy_price: price 
+            shares: Number(result.newShares),
+            avg_price: Number(result.newAvgPrice),
+            last_buy_price: Number(price)
           });
         } else {
           posMap.delete(symbol);
@@ -288,31 +275,33 @@ export async function runTradingBot() {
       }
     }
 
-    // D. 结算阶段
+    // D. 结算阶段 (Final Check)
+    // 重新计算总资产 = 剩余现金 + (持仓 * 当前市价)
     let marketValue = 0;
     posMap.forEach((p) => {
       const currentPrice = marketData[p.symbol]?.price || p.last_buy_price;
       marketValue += (p.shares * currentPrice);
     });
+
     const totalEquity = currentCash + marketValue;
 
-    // 数据库落盘
-    await supabase.from('portfolio').update({ 
+    // E. 数据库更新 (带错误检测)
+    const { error } = await supabase.from('portfolio').update({ 
       cash_balance: currentCash, 
       total_equity: totalEquity,
       updated_at: new Date().toISOString()
     }).eq('investor_id', investor.id);
 
-    await supabase.from('equity_snapshots').insert({
-      investor_id: investor.id,
-      total_equity: totalEquity,
-      cash_balance: currentCash,
-      created_at: new Date().toISOString()
-    });
-    
-    // 只有当该投资者有操作时，才打印结算日志，避免刷屏
-    if (actionCount > 0) {
-      console.log(`👤 [${investor.name}] 本轮执行了 ${actionCount} 笔交易，当前总资产 $${Math.round(totalEquity).toLocaleString()}`);
+    if (error) {
+        console.error(`❌ [${investor.name}] 资产更新失败! 原因:`, error.message);
+    } else {
+        // 成功更新后，写入历史曲线点
+        await supabase.from('equity_snapshots').insert({
+          investor_id: investor.id,
+          total_equity: totalEquity,
+          cash_balance: currentCash,
+          created_at: new Date().toISOString()
+        });
     }
   }
 }
