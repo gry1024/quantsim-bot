@@ -146,7 +146,7 @@ async function finalizePortfolio(investorId: string, finalCash: number, marketMa
   await supabase.from('portfolio').update({
     cash_balance: finalCash,
     total_equity: totalEquity,
-    updated_at: new Date().toISOString()
+    // updated_at: new Date().toISOString()
   }).eq('investor_id', investorId);
 
   // 写入快照
