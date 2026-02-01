@@ -15,14 +15,18 @@ interface Position {
   updated_at: string;
 }
 
-// 获取实时行情 (修复 changePercent 解析)
+// 获取实时行情
 async function getMarketPrices(): Promise<Record<string, MarketData>> {
   const symbols = CONFIG.SYMBOLS.map(s => s.toLowerCase()).join(',');
   const symbolListStr = symbols.split(',').map(s => `gb_${s}`).join(',');
-  const url = `https://hq.sinajs.cn/list=${symbolListStr}`;
+  // 增加随机数防止缓存
+  const url = `https://hq.sinajs.cn/list=${symbolListStr}&t=${Date.now()}`;
   
   try {
-    const res = await fetch(url, { headers: { 'Referer': 'https://finance.sina.com.cn/' } });
+    const res = await fetch(url, { 
+        headers: { 'Referer': 'https://finance.sina.com.cn/' },
+        cache: 'no-store' 
+    });
     const text = await res.text();
     const marketData: Record<string, MarketData> = {};
     
@@ -48,7 +52,8 @@ async function getMarketPrices(): Promise<Record<string, MarketData>> {
 }
 
 /**
- * 核心交易执行 (已修复并发资金安全问题)
+ * 核心交易执行 (原子化修复版)
+ * 强制从数据库读取最新资金和持仓，防止内存状态滞后导致的重复买入
  */
 async function executeTrade(
   investorId: string,
@@ -56,57 +61,55 @@ async function executeTrade(
   action: 'BUY' | 'SELL' | 'SELL_ALL',
   amountUSD: number, 
   price: number,
-  _ignoredShares: number,    // 废弃：不使用传入的旧持仓
-  _ignoredAvgPrice: number,  // 废弃：不使用传入的旧均价
-  _ignoredCash: number,      // 废弃：不使用传入的旧现金
   reason: string
 ): Promise<{ newCash: number, newShares: number, newAvgPrice: number } | null> {
   
-  // 1. 【关键修复】强制从数据库获取最新 现金 和 持仓，防止并发导致的覆盖和资金错误
+  // 1. 🔒 核心锁：交易前强制查库，获取最新状态
   const [ { data: portData }, { data: posData } ] = await Promise.all([
       supabase.from('portfolio').select('cash_balance').eq('investor_id', investorId).single(),
       supabase.from('positions').select('shares, avg_price, last_buy_price').eq('investor_id', investorId).eq('symbol', symbol).single()
   ]);
 
-  // 如果数据库没数据（极端情况），回退到 0
   const safeCash = portData ? Number(portData.cash_balance) : 0;
   const currentShares = posData ? Number(posData.shares) : 0;
   const currentAvgPrice = posData ? Number(posData.avg_price) : 0;
-  const lastBuyPrice = posData ? Number(posData.last_buy_price) : price; // 保持旧的买入价
+  const lastBuyPrice = posData ? Number(posData.last_buy_price) : price;
 
   const safePrice = Number(price);
-  
   let tradeShares = 0;
   let tradeAmount = 0;
 
+  // 2. 计算交易量
   if (action === 'BUY') {
-    if (safeCash < amountUSD) return null; // 资金不足（基于最新数据库余额判断）
+    if (safeCash < amountUSD) {
+        console.warn(`⚠️ [${investorId}] 资金不足，取消买入。当前: $${safeCash}, 需要: $${amountUSD}`);
+        return null; 
+    }
     tradeShares = amountUSD / safePrice;
     tradeAmount = tradeShares * safePrice;
   } else if (action === 'SELL' || action === 'SELL_ALL') {
+    if (currentShares <= 0) return null; // 没货不卖
     tradeShares = action === 'SELL_ALL' ? currentShares : Math.min(amountUSD / safePrice, currentShares);
     tradeAmount = tradeShares * safePrice;
   }
 
-  if (tradeAmount < 1) return null; 
+  if (tradeAmount < 1) return null; // 忽略微小交易
 
-  // 资金结算
+  // 3. 资金结算
   const newCash = action === 'BUY' ? (safeCash - tradeAmount) : (safeCash + tradeAmount);
   const newShares = action === 'BUY' ? (currentShares + tradeShares) : (currentShares - tradeShares);
 
-  // 成本计算
+  // 4. 均价计算
   let newAvgPrice = Number(currentAvgPrice);
   if (action === 'BUY') {
     const oldVal = currentShares * newAvgPrice;
     const newVal = tradeAmount;
     newAvgPrice = (newShares > 0) ? (oldVal + newVal) / newShares : 0;
   }
-  if (newShares <= 0.0001) {
-    newAvgPrice = 0;
-  }
+  if (newShares <= 0.0001) newAvgPrice = 0;
 
-  // 写入交易日志
-  await supabase.from('trades').insert({
+  // 5. 写入交易日志
+  const { error: tradeError } = await supabase.from('trades').insert({
     investor_id: investorId,
     symbol,
     action: action === 'SELL_ALL' ? 'SELL' : action,
@@ -117,13 +120,17 @@ async function executeTrade(
     created_at: new Date().toISOString()
   });
 
-  // 更新持仓
-  if (newShares <= 0.0001) { // 浮点数容错
+  if (tradeError) {
+      console.error(`❌ [${investorId}] 交易日志写入失败:`, tradeError.message);
+      return null; // 关键步骤失败，中止以防数据不一致
+  }
+
+  // 6. 更新持仓 (Upsert)
+  if (newShares <= 0.0001) {
     await supabase.from('positions').delete().eq('investor_id', investorId).eq('symbol', symbol);
   } else {
-    // 只有买入才更新 last_buy_price，卖出保持原价方便策略判断
+    // 只有买入更新 last_buy_price，卖出保持原价
     const nextLastBuyPrice = action === 'BUY' ? safePrice : lastBuyPrice;
-
     await supabase.from('positions').upsert({
       investor_id: investorId,
       symbol,
@@ -134,27 +141,32 @@ async function executeTrade(
     }, { onConflict: 'investor_id,symbol' });
   }
 
-  // 2. 【关键修复】立即更新数据库的现金余额，确保原子性
+  // 7. ⚡️ 立即扣款 (不再等待循环结束)
   await supabase.from('portfolio').update({ 
       cash_balance: newCash,
       updated_at: new Date().toISOString()
   }).eq('investor_id', investorId);
 
-  console.log(`✅ [${investorId}] ${action} ${symbol}: 现金 ${Math.round(safeCash)} -> ${Math.round(newCash)}`);
+  console.log(`✅ [${investorId}] 交易成功: ${action} ${symbol} | 额度 $${Math.round(tradeAmount)} | 剩余现金 $${Math.round(newCash)}`);
   return { newCash, newShares, newAvgPrice };
 }
 
 export async function runTradingBot() {
+  console.log(`\n🔄 [${new Date().toLocaleTimeString()}] 开始执行量化策略扫描...`);
+  
   const marketData = await getMarketPrices();
-  if (Object.keys(marketData).length === 0) return;
+  if (Object.keys(marketData).length === 0) {
+      console.log("⚠️ 无法获取市场行情，本次跳过。");
+      return;
+  }
 
   for (const investor of INVESTORS) {
-    // A. 准备阶段
+    console.log(`👤 分析投资者: ${investor.name} (${investor.id})`);
+
+    // A. 准备阶段：初始化/获取账户
     let { data: portfolio } = await supabase.from('portfolio').select('*').eq('investor_id', investor.id).single();
-    
-    // 自动修复
     if (!portfolio) {
-      console.log(`🔧 [${investor.name}] 初始化账户...`);
+      console.log(`   🔧 初始化新账户...`);
       const { data: newP } = await supabase.from('portfolio').insert({
         investor_id: investor.id,
         cash_balance: 1000000,
@@ -168,7 +180,7 @@ export async function runTradingBot() {
 
     const { data: positionsRaw } = await supabase.from('positions').select('*').eq('investor_id', investor.id);
     
-    // B. 内存账本 (用于策略快速读取，但写入时 executeTrade 会重新查库)
+    // B. 构建内存状态 (仅用于策略判断，交易时会再次查库)
     let currentCash = Number(portfolio.cash_balance);
     let peakEquity = Number(portfolio.peak_equity || portfolio.total_equity);
     const posMap = new Map<string, Position>();
@@ -183,7 +195,7 @@ export async function runTradingBot() {
       });
     });
 
-    // 计算当前总资产 (用于兵王回撤判断)
+    // 计算回撤
     let tempMarketValue = 0;
     posMap.forEach((p) => {
         const price = marketData[p.symbol]?.price || p.last_buy_price;
@@ -197,20 +209,26 @@ export async function runTradingBot() {
     }
     const drawdown = (peakEquity > 0) ? (peakEquity - currentTotalEquity) / peakEquity : 0;
 
-    // C. 交易循环
+    // C. 策略循环
     for (const symbol of CONFIG.SYMBOLS) {
       const data = marketData[symbol];
       if (!data) continue;
 
       const { price, changePercent } = data;
       const pos = posMap.get(symbol); 
-      // 注意：这里的 shares 仅用于策略判断触发条件，executeTrade 内部会查最新的真实 shares
       const shares = pos ? pos.shares : 0;
       const avgPrice = pos ? pos.avg_price : 0;
       const lastPrice = pos ? pos.last_buy_price : 0;
       const hasPos = shares > 0;
-      const lastUpdateTime = pos ? new Date(pos.updated_at).getTime() : 0;
+      
+      // 💡 关键逻辑：获取上次交易时间，防止单日重复交易
+      const lastUpdateStr = pos?.updated_at;
+      const lastUpdateDate = lastUpdateStr ? new Date(lastUpdateStr).toDateString() : '';
+      const todayDate = new Date().toDateString();
+      const isTradedToday = lastUpdateDate === todayDate;
+
       const now = Date.now();
+      const lastUpdateTime = pos ? new Date(pos.updated_at).getTime() : 0;
 
       let result = null;
 
@@ -219,16 +237,17 @@ export async function runTradingBot() {
         case 'soldier': // 兵王
             if (drawdown > 0.10) {
                 if (hasPos && price > lastPrice * 1.02) {
-                     result = await executeTrade(investor.id, symbol, 'SELL', (shares * price) * 0.2, price, shares, avgPrice, currentCash, '回撤控制-战术撤退');
+                     result = await executeTrade(investor.id, symbol, 'SELL', (shares * price) * 0.2, price, '回撤控制-战术撤退');
                 }
             } else {
                 if (!hasPos && currentCash >= 100000) {
-                    result = await executeTrade(investor.id, symbol, 'BUY', 100000, price, 0, 0, currentCash, '兵王底仓');
+                    result = await executeTrade(investor.id, symbol, 'BUY', 100000, price, '兵王底仓');
                 } else if (hasPos) {
-                    if (price < lastPrice * 0.98 && currentCash >= 10000) {
-                        result = await executeTrade(investor.id, symbol, 'BUY', 10000, price, shares, avgPrice, currentCash, '下跌补给');
-                    } else if (price > lastPrice * 1.02) {
-                        result = await executeTrade(investor.id, symbol, 'SELL', (shares * price) * 0.2, price, shares, avgPrice, currentCash, '战术撤退20%');
+                    // 下跌 2% 补仓 (且今天没操作过，避免无限补)
+                    if (price < lastPrice * 0.98 && currentCash >= 10000 && !isTradedToday) {
+                        result = await executeTrade(investor.id, symbol, 'BUY', 10000, price, '下跌补给');
+                    } else if (price > lastPrice * 1.02 && !isTradedToday) {
+                        result = await executeTrade(investor.id, symbol, 'SELL', (shares * price) * 0.2, price, '战术撤退20%');
                     }
                 }
             }
@@ -236,79 +255,87 @@ export async function runTradingBot() {
 
         case 'xiaoqing': // 小青
             if (!hasPos && currentCash >= 100000) {
-                result = await executeTrade(investor.id, symbol, 'BUY', 100000, price, 0, 0, currentCash, '小青存股');
+                result = await executeTrade(investor.id, symbol, 'BUY', 100000, price, '小青存股');
             } else if (hasPos && price < lastPrice * 0.85 && currentCash >= 50000) {
-                result = await executeTrade(investor.id, symbol, 'BUY', 50000, price, shares, avgPrice, currentCash, '越跌越买');
+                result = await executeTrade(investor.id, symbol, 'BUY', 50000, price, '越跌越买');
             }
             break;
 
         case 'dog': // 狗哥
             const dogAvailable = currentCash - 800000;
             if (!hasPos && dogAvailable >= 40000) {
-                 result = await executeTrade(investor.id, symbol, 'BUY', 40000, price, 0, 0, currentCash, '狗哥底仓');
+                 result = await executeTrade(investor.id, symbol, 'BUY', 40000, price, '狗哥底仓');
             } else if (hasPos) {
                 if (price > lastPrice * 1.05) {
-                    result = await executeTrade(investor.id, symbol, 'SELL', (shares * price) * 0.5, price, shares, avgPrice, currentCash, '止盈一半');
+                    result = await executeTrade(investor.id, symbol, 'SELL', (shares * price) * 0.5, price, '止盈一半');
                 } else if (price < lastPrice * 0.98) {
-                    result = await executeTrade(investor.id, symbol, 'SELL_ALL', 0, price, shares, avgPrice, currentCash, '清仓止损');
+                    result = await executeTrade(investor.id, symbol, 'SELL_ALL', 0, price, '清仓止损');
                 }
             }
             break;
         
         case 'mom': // 宝妈
             if (!hasPos && currentCash >= 200000) {
-                 result = await executeTrade(investor.id, symbol, 'BUY', 200000, price, 0, 0, currentCash, '宝妈满仓');
+                 result = await executeTrade(investor.id, symbol, 'BUY', 200000, price, '宝妈满仓');
             } else if (hasPos) {
                 if (price > lastPrice * 1.20) {
-                    result = await executeTrade(investor.id, symbol, 'SELL', (shares * price) * 0.2, price, shares, avgPrice, currentCash, '高位减仓');
+                    result = await executeTrade(investor.id, symbol, 'SELL', (shares * price) * 0.2, price, '高位减仓');
                 } else if (price < lastPrice * 0.95) {
-                    result = await executeTrade(investor.id, symbol, 'SELL_ALL', 0, price, shares, avgPrice, currentCash, '清仓离场');
+                    result = await executeTrade(investor.id, symbol, 'SELL_ALL', 0, price, '清仓离场');
                 }
             }
             break;
 
         case 'gambler': // 赌怪
             if (!hasPos && currentCash >= 10000) {
-                 result = await executeTrade(investor.id, symbol, 'BUY', 10000, price, 0, 0, currentCash, '赌怪底仓');
+                 result = await executeTrade(investor.id, symbol, 'BUY', 10000, price, '赌怪底仓');
             } else if (hasPos) {
                 if (price < lastPrice * 0.90 && currentCash >= (shares * price)) {
-                     result = await executeTrade(investor.id, symbol, 'BUY', shares * price, price, shares, avgPrice, currentCash, '双倍补仓');
+                     result = await executeTrade(investor.id, symbol, 'BUY', shares * price, price, '双倍补仓');
                 } else if (price > avgPrice * 1.01) {
-                     result = await executeTrade(investor.id, symbol, 'SELL_ALL', 0, price, shares, avgPrice, currentCash, '微利跑路');
+                     result = await executeTrade(investor.id, symbol, 'SELL_ALL', 0, price, '微利跑路');
                 }
             }
             break;
 
-        case 'leek': // 韭菜
+        case 'leek': // 韭菜 🟢 (已修复)
             if (!hasPos && currentCash >= 50000) {
-                 result = await executeTrade(investor.id, symbol, 'BUY', 50000, price, 0, 0, currentCash, '韭菜进场');
+                 result = await executeTrade(investor.id, symbol, 'BUY', 50000, price, '韭菜进场');
             } else if (hasPos) {
+                // 涨停追高：必须检查 !isTradedToday，否则涨幅一直 > 5% 会导致无限买入
                 if (changePercent > 0.05 && currentCash >= 50000) {
-                     result = await executeTrade(investor.id, symbol, 'BUY', 50000, price, shares, avgPrice, currentCash, '涨停追高');
+                     if (!isTradedToday) {
+                        result = await executeTrade(investor.id, symbol, 'BUY', 50000, price, '涨停追高');
+                     } else {
+                        // 打印详细日志，让用户知道为什么没买
+                        console.log(`   [Leek] ${symbol} 涨幅 ${Math.round(changePercent*100)}% > 5%，但今日已操作过，跳过。`);
+                     }
                 } else if (changePercent < -0.05) {
-                     result = await executeTrade(investor.id, symbol, 'SELL', 50000, price, shares, avgPrice, currentCash, '跌停割肉');
+                     if (!isTradedToday) {
+                        result = await executeTrade(investor.id, symbol, 'SELL', 50000, price, '跌停割肉');
+                     }
                 }
             }
             break;
 
         case 'zen': // 高僧
             if (!hasPos && currentCash >= 50000) {
-                 result = await executeTrade(investor.id, symbol, 'BUY', 50000, price, 0, 0, currentCash, '随缘底仓');
+                 result = await executeTrade(investor.id, symbol, 'BUY', 50000, price, '随缘底仓');
             } else if (hasPos) {
                 const hoursPassed = (now - lastUpdateTime) / (1000 * 3600);
-                if (hoursPassed >= 24) {
+                if (hoursPassed >= 24) { // 每天只做一次决定
                     const dice = Math.random();
                     if (dice > 0.5 && currentCash >= 10000) {
-                         result = await executeTrade(investor.id, symbol, 'BUY', 10000, price, shares, avgPrice, currentCash, '日行一善-买');
+                         result = await executeTrade(investor.id, symbol, 'BUY', 10000, price, '日行一善-买');
                     } else {
-                         result = await executeTrade(investor.id, symbol, 'SELL', 10000, price, shares, avgPrice, currentCash, '日行一善-卖');
+                         result = await executeTrade(investor.id, symbol, 'SELL', 10000, price, '日行一善-卖');
                     }
                 }
             }
             break;
       }
 
-      // 更新内存状态（仅为了循环内的下一个 symbol 能感知到资金变化）
+      // 更新内存状态 (用于当前循环的后续计算，虽然 cash 已经在 DB 更新，但这里保持同步是个好习惯)
       if (result) {
         currentCash = Number(result.newCash); 
         if (result.newShares > 0) {
@@ -327,6 +354,8 @@ export async function runTradingBot() {
     }
 
     // D. 结算阶段
+    // ⚠️ 修复：不再覆盖更新 cash_balance，只更新 total_equity
+    // 现金流在 executeTrade 中已经原子化扣除了，这里只负责计算最新的市值展示
     let finalMarketValue = 0;
     posMap.forEach((p) => {
       const currentPrice = marketData[p.symbol]?.price || p.last_buy_price;
@@ -335,17 +364,16 @@ export async function runTradingBot() {
 
     const finalTotalEquity = currentCash + finalMarketValue;
 
-    // E. 数据库更新 (⚠️ 关键修复：不再更新 cash_balance，只更新 total_equity)
-    // cash_balance 已经在 executeTrade 中实时更新了，这里如果再更新，会用旧数据覆盖掉并发交易的结果
     const { error } = await supabase.from('portfolio').update({ 
-      // cash_balance: currentCash, <--- 这一行删除了
+      // cash_balance: currentCash, // ❌ 删除此行，防止覆盖并发交易的结果
       total_equity: finalTotalEquity,
       updated_at: new Date().toISOString()
     }).eq('investor_id', investor.id);
 
     if (error) {
-        console.error(`❌ [${investor.name}] 资产更新失败:`, error.message);
+        console.error(`   ❌ 资产更新失败:`, error.message);
     } else {
+        // 记录快照
         await supabase.from('equity_snapshots').insert({
           investor_id: investor.id,
           total_equity: finalTotalEquity,
@@ -354,4 +382,5 @@ export async function runTradingBot() {
         });
     }
   }
+  console.log(`✅ [${new Date().toLocaleTimeString()}] 扫描完成。\n`);
 }
