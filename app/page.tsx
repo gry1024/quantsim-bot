@@ -1,33 +1,34 @@
 import DashboardClient from './components/DashboardClient';
 import { createClient } from '@supabase/supabase-js';
 
-// 强制动态渲染，禁用缓存 (确保每次刷新都能看到最新买入的交易)
+// 强制动态渲染，确保每次刷新获取最新排名
 export const revalidate = 0;
 
 export default async function Page() {
-  // 1. 初始化服务端 Supabase 客户端
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY!;
   const supabase = createClient(supabaseUrl, supabaseKey);
 
-  // 2. 并行获取所有核心数据
-  const [portfolioRes, positionsRes, tradesRes, candlesRes] = await Promise.all([
-    supabase.from('portfolio').select('*').single(),
-    supabase.from('positions').select('*'),
-    // 🔧 关键修复：按时间倒序排列，取最新的 50 条
-    supabase.from('trades').select('*').order('created_at', { ascending: false }).limit(50),
-    supabase.from('market_candles').select('*').order('date', { ascending: true })
+  // 默认视角
+  const defaultId = 'leek';
+
+  // 1. 并行获取数据
+  const [allPortfoliosRes, positionsRes, tradesRes, candlesRes, snapshotsRes] = await Promise.all([
+    supabase.from('portfolio').select('*'), // 👈 改动：获取【所有】人的资产数据
+    supabase.from('positions').select('*').eq('investor_id', defaultId),
+    supabase.from('trades').select('*').eq('investor_id', defaultId).order('created_at', { ascending: false }).limit(50),
+    supabase.from('market_candles').select('*').order('date', { ascending: true }),
+    supabase.from('equity_snapshots').select('*').eq('investor_id', defaultId).order('created_at', { ascending: true }).limit(100)
   ]);
 
-  // 3. 数据处理 (转换 K 线格式)
+  // 2. 数据处理
+  const allPortfolios = allPortfoliosRes.data || [];
+  // 从列表中找到默认用户的 portfolio
+  const currentPortfolio = allPortfolios.find(p => p.investor_id === defaultId) || null;
+
   const historyMap: Record<string, any[]> = {};
-  const chartData: any[] = []; // 资产走势数据(这里暂时留空或从 snapshots 表获取)
-  
-  // 处理 K 线数据分组
   candlesRes.data?.forEach((candle) => {
-    if (!historyMap[candle.symbol]) {
-      historyMap[candle.symbol] = [];
-    }
+    if (!historyMap[candle.symbol]) historyMap[candle.symbol] = [];
     historyMap[candle.symbol].push({
       time: candle.date,
       open: candle.open,
@@ -37,24 +38,19 @@ export default async function Page() {
     });
   });
 
-  // 4. 获取资产走势快照 (可选，为了画最上面的大图)
-  const { data: snapshots } = await supabase
-    .from('equity_snapshots')
-    .select('*')
-    .order('created_at', { ascending: true })
-    .limit(100);
-
-  const equityData = snapshots?.map(s => ({
-    time: s.created_at.split('T')[0], // 简化为 YYYY-MM-DD
+  const equityData = snapshotsRes.data?.map(s => ({
+    time: s.created_at.split('T')[0],
     value: s.total_equity
   })) || [];
 
   return (
     <DashboardClient 
-      portfolio={portfolioRes.data}
-      positions={positionsRes.data || []}
-      trades={tradesRes.data || []} // 👈 这里的 trades 现在包含最新的买入记录了
-      chartData={equityData}
+      defaultInvestorId={defaultId}
+      initialAllPortfolios={allPortfolios} // 👈 传入所有人的钱包数据
+      initialPortfolio={currentPortfolio}
+      initialPositions={positionsRes.data || []}
+      initialTrades={tradesRes.data || []}
+      initialChartData={equityData}
       historyMap={historyMap}
     />
   );
