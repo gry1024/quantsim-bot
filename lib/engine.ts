@@ -34,7 +34,9 @@ async function getWeeklyStats(symbol: string): Promise<{ high: number; low: numb
  */
 async function getMarketPrices(): Promise<Record<string, MarketData>> {
   const symbols = CONFIG.SYMBOLS.map(s => s.toLowerCase()).join(',');
-  const url = `https://hq.sinajs.cn/list=${symbols.split(',').map(s => `gb_${s}`).join(',')}&t=${Date.now()}`;
+  
+  // 🔧 修复点：将时间戳 t 参数移到 list 之前，防止新浪解析器将 &t 误认为是股票代码的一部分
+  const url = `https://hq.sinajs.cn/t=${Date.now()}&list=${symbols.split(',').map(s => `gb_${s}`).join(',')}`;
   
   try {
     const res = await fetch(url, { headers: { 'Referer': 'https://finance.sina.com.cn/' }, cache: 'no-store' });
@@ -42,11 +44,16 @@ async function getMarketPrices(): Promise<Record<string, MarketData>> {
     const marketData: Record<string, MarketData> = {};
     
     text.split('\n').forEach((line) => {
-      const match = line.match(/gb_([a-z]+)="([^"]+)"/);
+      // 兼容大小写的正则
+      const match = line.match(/gb_(\w+)="([^"]+)"/);
       if (match) {
         const symbol = match[1].toUpperCase();
         const parts = match[2].split(',');
         const price = parseFloat(parts[1]);
+        
+        // 调试日志（确认修复后可注释掉）
+        // console.log(`🔍 解析: ${symbol} = ${price}`);
+
         if (!isNaN(price) && price > 0) {
           marketData[symbol] = { 
             symbol, 
@@ -57,14 +64,12 @@ async function getMarketPrices(): Promise<Record<string, MarketData>> {
         }
       }
     });
-
     return marketData;
   } catch (e: any) {
     console.error(`❌ 行情接口调用失败: ${e.message}`);
     return {};
   }
 }
-
 /**
  * 执行交易 (更新 positions 和 trades)
  */
