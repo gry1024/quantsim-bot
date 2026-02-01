@@ -6,34 +6,17 @@ import { STOCK_NAMES } from '../../lib/constants';
 import { 
   TrendingUp, TrendingDown, Activity, Wallet, 
   Clock, RefreshCcw, Layers, BarChart3, PieChart,
-  LayoutDashboard, Trophy
+  LayoutDashboard, Trophy // 👈 引入奖杯图标
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import EquityChart from './EquityChart';
 import MiniCandleChart from './MiniCandleChart';
 import AssetDonut from './AssetDonut';
-import LeaderboardView from './LeaderboardView';
+import LeaderboardView from './LeaderboardView'; // 👈 替换 StrategyView
 import InvestorSelector from './InvestorSelector';
 
-// --- 💡 新增：防 Hydration 错误的组件 ---
-function TimeAgo({ date }: { date: string }) {
-  const [mounted, setMounted] = useState(false);
-  
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  if (!mounted) return <span className="text-slate-300">...</span>;
-
-  return (
-    <span>
-      {formatDistanceToNow(new Date(date), { addSuffix: true, locale: zhCN })}
-    </span>
-  );
-}
-// ------------------------------------
-
+// ... (Trade 和 Position 接口定义保持不变，此处省略以节省空间) ...
 interface Trade {
   id: number;
   symbol: string;
@@ -60,7 +43,7 @@ interface Position {
 
 interface DashboardClientProps {
   defaultInvestorId: string;
-  initialAllPortfolios: any[];
+  initialAllPortfolios: any[]; // 👈 新增
   initialPortfolio: any;
   initialPositions: any[];
   initialTrades: any[];
@@ -81,6 +64,7 @@ export default function DashboardClient({
     const [currentInvestorId, setCurrentInvestorId] = useState(defaultInvestorId);
     const [activeView, setActiveView] = useState<'monitor' | 'leaderboard'>('monitor');
     
+    // 🔧 修复：增加 || [] 默认值，防止传入 undefined 导致崩溃
     const [allPortfolios, setAllPortfolios] = useState(initialAllPortfolios || []); 
     const [portfolio, setPortfolio] = useState(initialPortfolio || {});
     const [positions, setPositions] = useState<Position[]>(initialPositions || []);
@@ -93,12 +77,15 @@ export default function DashboardClient({
   const fetchInvestorData = async (id: string) => {
     setIsLive(false);
     
+    // 1. 获取当前视角的持仓、交易、曲线
     const [posRes, trdRes, snapRes] = await Promise.all([
       supabase.from('positions').select('*').eq('investor_id', id),
       supabase.from('trades').select('*').eq('investor_id', id).order('created_at', { ascending: false }).limit(50),
       supabase.from('equity_snapshots').select('*').eq('investor_id', id).order('created_at', { ascending: true }).limit(100)
     ]);
 
+    // 2. 更新状态
+    // 注意：Portfolio 数据我们从 allPortfolios 里直接拿最新的，不用重新 fetch 单条
     const targetPortfolio = allPortfolios.find(p => p.investor_id === id);
     if (targetPortfolio) setPortfolio(targetPortfolio);
 
@@ -119,30 +106,36 @@ export default function DashboardClient({
     fetchInvestorData(id);
   };
 
+  // 处理排行榜点击跳转
   const handleLeaderboardSelect = (id: string) => {
     setCurrentInvestorId(id);
     fetchInvestorData(id);
-    setActiveView('monitor');
+    setActiveView('monitor'); // 自动切回控制台看详情
   };
 
   const initialCapital = portfolio?.initial_capital || 1000000;
   const currentEquity = portfolio?.total_equity || initialCapital;
   const cashBalance = portfolio?.cash_balance || 0;
   const pnl = currentEquity - initialCapital;
-  const pnlPercent = initialCapital > 0 ? (pnl / initialCapital) * 100 : 0;
+  const pnlPercent = (pnl / initialCapital) * 100;
   const isProfit = pnl >= 0;
 
   useEffect(() => {
+    // 订阅全局数据
     const channel = supabase.channel(`dashboard-global`);
     
     channel
+      // 1. 监听【所有】Portfolio 更新，以驱动排行榜实时跳动
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'portfolio' }, (payload: any) => {
           const updated = payload.new;
+          // 更新总表
           setAllPortfolios(prev => prev.map(p => p.investor_id === updated.investor_id ? updated : p));
+          // 如果更新的是当前视角，同步更新当前 portfolio
           if (updated.investor_id === currentInvestorId) {
              setPortfolio(updated);
           }
       })
+      // 2. 下面的表需要过滤 investor_id，否则会收到别人的交易推送
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'equity_snapshots', filter: `investor_id=eq.${currentInvestorId}` }, (payload: any) => {
           const newPoint = { time: payload.new.created_at.split('T')[0], value: payload.new.total_equity };
           setEquityData(prev => [...prev, newPoint]);
@@ -155,7 +148,9 @@ export default function DashboardClient({
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'trades', filter: `investor_id=eq.${currentInvestorId}` }, (payload: any) => {
           setTrades((prev) => [payload.new, ...prev]);
       })
+      // K线是公用的
       .on('postgres_changes', { event: '*', schema: 'public', table: 'market_candles' }, (payload: any) => {
+          // ... (K线更新逻辑保持不变) ...
           const newCandle = payload.new as any;
           if (!newCandle || !newCandle.symbol) return;
           setHistoryMap((prevMap) => {
@@ -175,8 +170,9 @@ export default function DashboardClient({
       .subscribe((status: string) => { if (status === 'SUBSCRIBED') setIsLive(true); });
 
     return () => { supabase.removeChannel(channel); };
-  }, [currentInvestorId]);
+  }, [currentInvestorId]); // 当 currentInvestorId 变化时，重新订阅专属频道
 
+  // ... (图表数据构造逻辑保持不变) ...
   const finalChartData = [...(equityData || [])];
   const todayStr = new Date().toISOString().split('T')[0];
   if (finalChartData.length > 0) {
@@ -190,6 +186,7 @@ export default function DashboardClient({
     finalChartData.push({ time: todayStr, value: currentEquity });
   }
 
+  // ... (Position 标准化逻辑保持不变) ...
   const normalizedPositions = positions.map(p => ({
       ...p,
       quantity: p.shares ?? p.quantity ?? 0,
@@ -218,6 +215,7 @@ export default function DashboardClient({
           <button onClick={() => setActiveView('monitor')} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeView === 'monitor' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-600 hover:bg-slate-50'}`}>
             <LayoutDashboard size={18} /> 控制台
           </button>
+          {/* 👇 修改按钮：策略说明 -> 排行榜 */}
           <button onClick={() => setActiveView('leaderboard')} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeView === 'leaderboard' ? 'bg-yellow-500 text-white shadow-md' : 'text-slate-600 hover:bg-slate-50'}`}>
             <Trophy size={18} /> 资产排行榜
           </button>
@@ -225,6 +223,7 @@ export default function DashboardClient({
 
         <div className="p-6 space-y-6 flex-1 overflow-y-auto custom-scrollbar">
           <InvestorSelector current={currentInvestorId} onChange={handleInvestorChange} />
+          {/* ... (侧边栏底部信息保持不变) ... */}
            <div>
             <div className="text-xs font-semibold text-slate-400 uppercase mb-2 flex items-center gap-1">
               <Wallet size={14} /> 账户总净值 (USD)
@@ -287,15 +286,18 @@ export default function DashboardClient({
 
         <div className="flex-1 overflow-y-auto p-4 md:p-8 scroll-smooth pb-24 md:pb-8">
           {activeView === 'leaderboard' ? (
+            // 👇 替换为排行榜组件
             <LeaderboardView 
                 portfolios={allPortfolios} 
                 currentInvestorId={currentInvestorId}
                 onSelect={handleLeaderboardSelect} 
             />
           ) : (
+            // 控制台视图保持不变
             <>
               <section className="mb-6 md:mb-8 hidden md:block"><EquityChart data={finalChartData} /></section>
               <section className="mb-8">
+                {/* ... (持仓列表代码保持不变) ... */}
                 <div className="flex items-center justify-between mb-4 px-1">
                   <h3 className="font-bold text-slate-700 flex items-center gap-2 text-sm md:text-base">
                     <BarChart3 size={18} /> 持仓监控 ({normalizedPositions.length})
@@ -365,6 +367,7 @@ export default function DashboardClient({
                 </div>
               </section>
 
+              {/* 交易日志部分保持不变 */}
               <section>
                  <div className="flex items-center justify-between mb-4 px-1"><h3 className="font-bold text-slate-700 flex items-center gap-2 text-sm md:text-base"><Clock size={18} /> 交易日志</h3></div>
                  <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
@@ -386,8 +389,7 @@ export default function DashboardClient({
                           {/* Mobile */}
                           <div className="md:hidden col-span-2 flex justify-between items-center mb-1">
                               <span className="font-bold text-slate-800">{trade.symbol}</span>
-                              {/* 💡 使用自定义 TimeAgo 组件 */}
-                              <span className="text-xs text-slate-400"><TimeAgo date={trade.created_at} /></span>
+                              <span className="text-xs text-slate-400">{formatDistanceToNow(new Date(trade.created_at), { addSuffix: true, locale: zhCN })}</span>
                           </div>
                           <div className="md:hidden col-span-2 flex justify-between items-center text-xs">
                                <div className="flex items-center gap-2">
@@ -398,8 +400,7 @@ export default function DashboardClient({
                                 </div>
                           </div>
                           {/* Desktop */}
-                          {/* 💡 使用自定义 TimeAgo 组件 */}
-                          <div className="hidden md:block col-span-1 text-slate-400 text-xs"><TimeAgo date={trade.created_at} /></div>
+                          <div className="hidden md:block col-span-1 text-slate-400 text-xs">{formatDistanceToNow(new Date(trade.created_at), { addSuffix: true, locale: zhCN })}</div>
                           <div className="hidden md:block col-span-1 font-bold text-slate-800">{trade.symbol}</div>
                           <div className="hidden md:block col-span-1"><span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${trade.action === 'BUY' ? 'bg-red-50 text-red-700 border-red-100' : 'bg-green-50 text-green-700 border-green-100'}`}>{trade.action === 'BUY' ? '买入' : '卖出'}</span></div>
                           <div className="hidden md:block col-span-1 text-right font-medium text-slate-700 font-mono">${Number(trade.price).toFixed(2)}</div>
@@ -415,7 +416,7 @@ export default function DashboardClient({
           )}
         </div>
         
-        {/* Mobile Navbar */}
+        {/* Mobile Navbar - Updated Buttons */}
         <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-6 py-2 flex justify-between items-center z-50 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] pb-safe">
           <button onClick={() => setActiveView('monitor')} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition ${activeView === 'monitor' ? 'text-slate-900' : 'text-slate-400 hover:text-slate-600'}`}>
             <LayoutDashboard size={20} className={activeView === 'monitor' ? 'fill-slate-900/10' : ''} />

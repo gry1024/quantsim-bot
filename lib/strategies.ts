@@ -1,186 +1,186 @@
+// lib/strategies.ts
+import { StrategyFn, TradeDecision, StrategyParams } from './type';
 
-    import { StrategyFunction, StrategyDecision } from './types';
-    
-    // 辅助函数：判断今天是否已经操作过
-    const hasTradedToday = (trades: any[]): boolean => {
-      return trades.length > 0;
-    };
-    
-    // ================= 策略实现 =================
-    
-    // 1. 韭菜 (Leek): 追涨杀跌
-    const leekStrategy: StrategyFunction = ({ price, cash, position, todayTrades }) => {
-      if (hasTradedToday(todayTrades)) return { action: 'HOLD', reason: '日内限制' };
-    
-      // 建仓
-      if (!position && cash >= 50000) {
-        return { action: 'BUY', amountUSD: 50000, reason: '韭菜底仓' };
-      }
-    
-      // 持仓检测
-      if (position) {
-        const lastPrice = position.last_action_price || position.avg_price;
-        const change = (price - lastPrice) / lastPrice;
-    
-        // 涨 > 5% 追高
-        if (change > 0.05 && cash >= 50000) {
-          return { action: 'BUY', amountUSD: 50000, reason: '追涨杀跌-追高' };
-        }
-        // 跌 > 5% 割肉
-        if (change < -0.05) {
-          return { action: 'SELL', quantity: position.shares, reason: '追涨杀跌-割肉' }; // 全部卖出
-        }
-      }
-    
-      return { action: 'HOLD', reason: '无信号' };
-    };
-    
-    // 2. 赌怪 (Gambler): 马丁格尔策略
-    const gamblerStrategy: StrategyFunction = ({ price, cash, position, todayTrades }) => {
-      if (hasTradedToday(todayTrades)) return { action: 'HOLD', reason: '日内限制' };
-    
-      if (!position && cash >= 10000) {
-        return { action: 'BUY', amountUSD: 10000, reason: '赌怪底仓' };
-      }
-    
-      if (position) {
-        // 相对上次买入价下跌 10%，双倍补仓
-        const lastBuy = position.last_buy_price || position.avg_price;
-        if (price < lastBuy * 0.90) {
-          const currentCost = position.shares * position.avg_price;
-          // 补仓金额等于当前持仓总成本 (Double Down)
-          if (cash >= currentCost) {
-            return { action: 'BUY', amountUSD: currentCost, reason: '马丁格尔-双倍补仓' };
-          }
-        }
-    
-        // 相对均价上涨 2%，全部止盈
-        if (price > position.avg_price * 1.02) {
-          return { action: 'SELL', quantity: position.shares, reason: '获利离场' };
-        }
-      }
-    
-      return { action: 'HOLD', reason: '无信号' };
-    };
-    
-    // 3. 宝妈 (Mom): 止盈止损明确
-    const momStrategy: StrategyFunction = ({ price, cash, position, todayTrades }) => {
-      if (hasTradedToday(todayTrades)) return { action: 'HOLD', reason: '日内限制' };
-    
-      if (!position && cash >= 200000) {
-        return { action: 'BUY', amountUSD: 200000, reason: '宝妈满仓' };
-      }
-    
-      if (position) {
-        const lastBuy = position.last_buy_price || position.avg_price;
-        // 涨 20% 卖出 20%
-        if (price > lastBuy * 1.20) {
-          return { action: 'SELL', quantity: position.shares * 0.2, reason: '高位取现' };
-        }
-        // 跌 5% 全部止损
-        if (price < lastBuy * 0.95) {
-          return { action: 'SELL', quantity: position.shares, reason: '严格止损' };
-        }
-      }
-      return { action: 'HOLD', reason: '无信号' };
-    };
-    
-    // 4. 狗哥 (Dog): 保本流
-    const dogStrategy: StrategyFunction = ({ price, cash, position, todayTrades }) => {
-      if (hasTradedToday(todayTrades)) return { action: 'HOLD', reason: '日内限制' };
-      
-      // 必须保留 80w 现金
-      const safeCash = cash - 800000;
-    
-      if (!position && safeCash >= 40000) {
-        return { action: 'BUY', amountUSD: 40000, reason: '狗哥底仓' };
-      }
-    
-      if (position) {
-        const lastAction = position.last_action_price || position.avg_price;
-        // 涨 5% 卖一半
-        if (price > lastAction * 1.05) {
-          return { action: 'SELL', quantity: position.shares * 0.5, reason: '落袋为安' };
-        }
-        // 跌 2% 清仓
-        if (price < lastAction * 0.98) {
-          return { action: 'SELL', quantity: position.shares, reason: '快速止损' };
-        }
-      }
-      return { action: 'HOLD', reason: '无信号' };
-    };
-    
-    // 5. 小青 (Xiaoqing): 死多头
-    const xiaoqingStrategy: StrategyFunction = ({ price, cash, position, todayTrades }) => {
-      if (hasTradedToday(todayTrades)) return { action: 'HOLD', reason: '日内限制' };
-    
-      if (!position && cash >= 100000) {
-        return { action: 'BUY', amountUSD: 100000, reason: '长期主义' };
-      }
-    
-      if (position) {
-        const lastAction = position.last_action_price || position.avg_price;
-        // 跌 15% 加仓
-        if (price < lastAction * 0.85 && cash >= 50000) {
-          return { action: 'BUY', amountUSD: 50000, reason: '越跌越买' };
-        }
-      }
-      // 永不卖出
-      return { action: 'HOLD', reason: '坚定持有' };
-    };
-    
-    // 6. 兵王 (Soldier): 动态回撤控制
-    const soldierStrategy: StrategyFunction = ({ price, cash, position, todayTrades, totalEquity }) => {
-      if (hasTradedToday(todayTrades)) return { action: 'HOLD', reason: '日内限制' };
-    
-      // 假设初始资金 100w，如果总资产跌破 90w (回撤10%)，停止买入
-      const isDrawdownSafe = totalEquity >= 900000;
-    
-      if (!position && cash >= 100000 && isDrawdownSafe) {
-        return { action: 'BUY', amountUSD: 100000, reason: '兵王出击' };
-      }
-    
-      if (position) {
-        const lastAction = position.last_action_price || position.avg_price;
-        // 跌 2% 补仓 (仅当回撤安全时)
-        if (price < lastAction * 0.98 && cash >= 10000 && isDrawdownSafe) {
-          return { action: 'BUY', amountUSD: 10000, reason: '战术补给' };
-        }
-        // 涨 2% 撤退 20%
-        if (price > lastAction * 1.02) {
-          return { action: 'SELL', quantity: position.shares * 0.2, reason: '战术撤退' };
-        }
-      }
-      return { action: 'HOLD', reason: '等待指令' };
-    };
-    
-    // 7. 高僧 (Zen): 随机
-    const zenStrategy: StrategyFunction = ({ cash, position }) => {
-      // 高僧不受日内限制，但受冷却时间限制（Engine层假设每小时运行一次，这里用随机数模拟24h触发）
-      // 为了简化，这里假设每次都有 1/24 的概率触发操作
-      const shouldAct = Math.random() < (1/24); 
-      
-      if (!shouldAct) return { action: 'HOLD', reason: '打坐中' };
-    
-      const dice = Math.random();
-      if (dice > 0.5 && cash >= 50000) {
-        return { action: 'BUY', amountUSD: 50000, reason: '缘分到了-买' };
-      } else if (dice <= 0.5 && position && position.shares > 0) {
-        // 卖出价值 50000 的份额
-        return { action: 'SELL', amountUSD: 50000, reason: '缘分到了-卖' };
-      }
-    
-      return { action: 'HOLD', reason: '随缘' };
-    };
-    
-    // 注册所有策略
-    export const STRATEGIES: Record<string, StrategyFunction> = {
-      leek: leekStrategy,
-      gambler: gamblerStrategy,
-      mom: momStrategy,
-      dog: dogStrategy,
-      xiaoqing: xiaoqingStrategy,
-      soldier: soldierStrategy,
-      zen: zenStrategy
-    };
-    
+// ================== 策略实现 ==================
+
+// 1. 韭菜 (Leek)
+// 逻辑: 底仓10w. 日涨幅>2%追5w. 日跌幅>5%清仓.
+const leekStrategy: StrategyFn = ({ position, cash, isTradedToday, marketData }: StrategyParams): TradeDecision => {
+  if (isTradedToday) return { action: 'HOLD', reason: '日内限频' };
+
+  // 底仓
+  if (!position) {
+    return cash >= 100000 ? { action: 'BUY', amountUSD: 100000, reason: '底仓' } : { action: 'HOLD', reason: '资金不足' };
+  }
+
+  // Sina API 的 changePercent 通常是 2.5 代表 2.5%
+  // 假设 engine 中解析时做了 /100 处理，如果是原样数值则需调整。
+  // 原 engine 代码: changePercent: parseFloat(parts[3]) / 100. 所以 0.02 就是 2%.
+  const change = marketData.changePercent; 
+
+  if (change > 0.02 && cash >= 50000) return { action: 'BUY', amountUSD: 50000, reason: '追涨' };
+  if (change < -0.05) return { action: 'SELL', shares: position.shares, reason: '割肉止损' };
+
+  return { action: 'HOLD', reason: '观望' };
+};
+
+// 2. 赌怪 (Gambler)
+// 逻辑: 底仓10w. 现价 < 上次买入价 * 0.97 (-3%) -> 加倍补仓(买入当前持仓市值的金额). 现价 > 上次买入价 * 1.03 (+3%) -> 卖出30%.
+const gamblerStrategy: StrategyFn = ({ position, price, cash, isTradedToday }: StrategyParams): TradeDecision => {
+  if (isTradedToday) return { action: 'HOLD', reason: '日内限频' };
+
+  if (!position) {
+    return cash >= 100000 ? { action: 'BUY', amountUSD: 100000, reason: '底仓' } : { action: 'HOLD', reason: '资金不足' };
+  }
+
+  const lastBuy = position.last_buy_price || position.avg_price;
+  
+  // 补仓逻辑
+  if (price < lastBuy * 0.97) {
+    const currentMarketValue = position.shares * price;
+    // 假设是“同等金额”补仓，指当前持仓价值
+    // 也可以理解为“持仓成本”同等金额。原文“当前持仓成本同等金额”。
+    const cost = position.shares * position.avg_price;
+    if (cash >= cost) return { action: 'BUY', amountUSD: cost, reason: '马丁补仓' };
+  }
+
+  // 止盈逻辑
+  if (price > lastBuy * 1.03) {
+    return { action: 'SELL', shares: position.shares * 0.3, reason: '获利减仓' };
+  }
+
+  return { action: 'HOLD', reason: '观望' };
+};
+
+// 3. 宝妈 (Mom)
+// 逻辑: 满仓20w. 现价 > 上次买入 * 1.10 -> 卖出20%取现. 永不买入(除底仓).
+const momStrategy: StrategyFn = ({ position, price, cash, isTradedToday }: StrategyParams): TradeDecision => {
+  if (isTradedToday) return { action: 'HOLD', reason: '日内限频' };
+
+  if (!position) {
+    // 只有第一次允许买入
+    return cash >= 200000 ? { action: 'BUY', amountUSD: 200000, reason: '满仓买入' } : { action: 'HOLD', reason: '资金不足' };
+  }
+
+  const lastBuy = position.last_buy_price || position.avg_price;
+  
+  if (price > lastBuy * 1.10) {
+    return { action: 'SELL', shares: position.shares * 0.20, reason: '止盈取现' };
+  }
+
+  return { action: 'HOLD', reason: '持有' };
+};
+
+// 4. 狗哥 (Dog)
+// 逻辑: 底仓5w. 现价 > 上次成交 * 1.05 -> 卖一半. 单日跌幅 > 2% -> 买1w. 总资产 < 50w -> 清仓.
+const dogStrategy: StrategyFn = ({ position, price, cash, isTradedToday, marketData, totalEquity }: StrategyParams): TradeDecision => {
+  if (isTradedToday) return { action: 'HOLD', reason: '日内限频' };
+
+  // 止损退场线
+  if (totalEquity < 500000 && position) {
+    return { action: 'SELL', shares: position.shares, reason: '破产清仓' };
+  }
+  if (totalEquity < 500000 && !position) {
+    return { action: 'HOLD', reason: '退场观望' };
+  }
+
+  if (!position) {
+    return cash >= 50000 ? { action: 'BUY', amountUSD: 50000, reason: '底仓' } : { action: 'HOLD', reason: '资金不足' };
+  }
+
+  const lastAction = position.last_action_price || position.avg_price;
+  const change = marketData.changePercent; // 0.02 = 2%
+
+  // 止盈
+  if (price > lastAction * 1.05) {
+    return { action: 'SELL', shares: position.shares * 0.5, reason: '止盈一半' };
+  }
+
+  // 抄底
+  if (change < -0.02 && cash >= 10000) {
+    return { action: 'BUY', amountUSD: 10000, reason: '大跌补仓' };
+  }
+
+  return { action: 'HOLD', reason: '观望' };
+};
+
+// 5. 小青 (Xiaoqing)
+// 逻辑: 底仓10w. 现价 < 上次成交 * 0.97 (-3%) -> 加仓5w. 永不卖出.
+const xiaoqingStrategy: StrategyFn = ({ position, price, cash, isTradedToday }: StrategyParams): TradeDecision => {
+  if (isTradedToday) return { action: 'HOLD', reason: '日内限频' };
+
+  if (!position) {
+    return cash >= 100000 ? { action: 'BUY', amountUSD: 100000, reason: '存股开始' } : { action: 'HOLD', reason: '资金不足' };
+  }
+
+  const lastAction = position.last_action_price || position.avg_price;
+
+  if (price < lastAction * 0.97 && cash >= 50000) {
+    return { action: 'BUY', amountUSD: 50000, reason: '低位定投' };
+  }
+
+  return { action: 'HOLD', reason: '囤币' };
+};
+
+// 6. 兵王 (Soldier)
+// 逻辑: 底仓10w. 跌破周低 -> 买入50%仓位(加仓). 突破周高 -> 卖出10%仓位.
+const soldierStrategy: StrategyFn = ({ position, price, cash, isTradedToday, weeklyHigh, weeklyLow }: StrategyParams): TradeDecision => {
+  if (isTradedToday) return { action: 'HOLD', reason: '日内限频' };
+
+  if (!position) {
+    return cash >= 100000 ? { action: 'BUY', amountUSD: 100000, reason: '战术底仓' } : { action: 'HOLD', reason: '资金不足' };
+  }
+
+  // 如果没有历史数据，无法决策
+  if (!weeklyHigh || !weeklyLow) return { action: 'HOLD', reason: '无情报' };
+
+  // 跌破周低 -> 抄底
+  if (price < weeklyLow) {
+    // 买入 50% 仓位 = 当前持仓股数 * 0.5 * 当前价格
+    const addAmount = (position.shares * 0.5) * price;
+    if (cash >= addAmount) return { action: 'BUY', amountUSD: addAmount, reason: '破位抄底' };
+  }
+
+  // 突破周高 -> 止盈
+  if (price > weeklyHigh) {
+    return { action: 'SELL', shares: position.shares * 0.1, reason: '新高减仓' };
+  }
+
+  return { action: 'HOLD', reason: '潜伏' };
+};
+
+// 7. 高僧 (Zen)
+// 逻辑: 底仓10w. 每天对每支标的以持仓金额的10%随机买入或卖出.
+const zenStrategy: StrategyFn = ({ position, price, cash, isTradedToday }: StrategyParams): TradeDecision => {
+  if (isTradedToday) return { action: 'HOLD', reason: '日内限频' };
+
+  if (!position) {
+    return cash >= 100000 ? { action: 'BUY', amountUSD: 100000, reason: '缘起' } : { action: 'HOLD', reason: '缘灭' };
+  }
+
+  // 随机操作
+  const roll = Math.random(); 
+  const operateValue = (position.shares * price) * 0.10; // 持仓金额的 10%
+
+  // 50% 概率买，50% 概率卖 (或者只要触发了就只做一件事? 题目说"随机买入或卖出")
+  // 我们可以设 0-0.5 买， 0.5-1.0 卖
+  if (roll < 0.5) {
+    // 买
+    if (cash >= operateValue) return { action: 'BUY', amountUSD: operateValue, reason: '随缘化缘' };
+  } else {
+    // 卖
+    return { action: 'SELL', shares: position.shares * 0.10, reason: '随缘布施' };
+  }
+
+  return { action: 'HOLD', reason: '入定' };
+};
+
+export const STRATEGIES: Record<string, StrategyFn> = {
+  leek: leekStrategy,
+  gambler: gamblerStrategy,
+  mom: momStrategy,
+  dog: dogStrategy,
+  xiaoqing: xiaoqingStrategy,
+  soldier: soldierStrategy,
+  zen: zenStrategy
+};
