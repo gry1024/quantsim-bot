@@ -37,13 +37,12 @@ export default function MiniCandleChart({ data }: MiniCandleChartProps) {
     const chart = createChart(chartContainerRef.current, {
       layout: {
         background: { type: ColorType.Solid, color: 'transparent' },
-        textColor: '#94A3B8', // 调整文字颜色使其更柔和
+        textColor: '#94A3B8',
         fontFamily: "'PingFang SC', 'Microsoft YaHei', sans-serif",
       },
       width: containerWidth,
       height: containerHeight || 200,
       
-      // 💡 新增：本地化配置，解决日期显示混乱问题
       localization: {
         locale: 'zh-CN',
         dateFormat: 'yyyy-MM-dd',
@@ -95,12 +94,10 @@ export default function MiniCandleChart({ data }: MiniCandleChartProps) {
         secondsVisible: false,
         visible: true,
         rightOffset: 5,
-        fixLeftEdge: true,
-        fixRightEdge: true,
-        // 💡 新增：自定义刻度格式化，只显示 月/日，避免混乱
+        fixLeftEdge: true, // 防止拖动到第一根K线之前的空白处
+        fixRightEdge: true, // 防止拖动到最后一根K线之后的空白处
         tickMarkFormatter: (time: any, tickMarkType: any, locale: any) => {
           const date = new Date(time);
-          // 简单格式化为 MM/DD
           return `${date.getMonth() + 1}/${date.getDate()}`;
         },
       },
@@ -108,13 +105,13 @@ export default function MiniCandleChart({ data }: MiniCandleChartProps) {
 
     chartRef.current = chart;
 
-    // B. 添加 K 线系列
+    // B. 添加 K 线系列 (红涨绿跌)
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#10B981',
-      downColor: '#EF4444',
+      upColor: '#EF4444',
+      downColor: '#10B981',
       borderVisible: false,
-      wickUpColor: '#10B981',
-      wickDownColor: '#EF4444',
+      wickUpColor: '#EF4444',
+      wickDownColor: '#10B981',
     });
     
     seriesRef.current = candleSeries;
@@ -126,7 +123,7 @@ export default function MiniCandleChart({ data }: MiniCandleChartProps) {
           width: chartContainerRef.current.clientWidth,
           height: chartContainerRef.current.clientHeight
         });
-        chartRef.current.timeScale().fitContent(); 
+        // 窗口调整时，保持当前的逻辑范围，不强制 fitContent
       }
     };
     window.addEventListener('resize', handleResize);
@@ -147,8 +144,19 @@ export default function MiniCandleChart({ data }: MiniCandleChartProps) {
       );
       seriesRef.current.setData(uniqueData as any);
       
+      // ✅ 关键优化：智能适配视图
+      // 如果数据非常多（>100条），只默认展示最近 100 条，保持 K 线清晰度，同时允许用户向左拖动查看历史。
+      // 如果数据较少，则展示全部。
       if (chartRef.current) {
-        chartRef.current.timeScale().fitContent(); 
+        const total = uniqueData.length;
+        if (total > 100) {
+          chartRef.current.timeScale().setVisibleLogicalRange({
+            from: total - 100, // 从倒数第 100 条开始
+            to: total,         // 到最后一条
+          });
+        } else {
+          chartRef.current.timeScale().fitContent(); 
+        }
       }
     }
   }, [data]);

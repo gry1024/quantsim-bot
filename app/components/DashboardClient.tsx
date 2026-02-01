@@ -287,40 +287,37 @@ export default function DashboardClient({
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
                   {normalizedPositions?.map((pos: any) => {
                     const avgCost = pos.average_cost || 0;
-                    const quantity = pos.quantity || 0; // 当前持仓 (Current)
+                    const quantity = pos.quantity || 0;
                     const investedPrincipal = avgCost * quantity;
                     
                     const realHistory = historyMap[pos.symbol] || [];
                     let currentPrice = pos.last_action_price || avgCost;
 
                     // ==========================================
-                    // 核心修改：当日盈亏逻辑 (Daily PnL Logic)
+                    // 核心逻辑：当日盈亏 & 涨跌额
                     // ==========================================
                     let dailyChangePercent = 0;
+                    let dailyChangeValue = 0; // 💡 新增：涨跌额
                     let dailyPnL = 0;
                     let hasDailyData = false;
                     
-                    // 1. 确定当前价格 (Current Price)
+                    // 1. 确定当前价格
                     if (realHistory.length > 0) {
                         const lastCandle = realHistory[realHistory.length - 1];
                         currentPrice = lastCandle.close;
                     }
 
-                    // 2. 确定昨日收盘价 (Yesterday Close)
-                    // 假设 realHistory 最后一个数据是实时的/今天的，那么倒数第二个是昨天的
+                    // 2. 确定昨日收盘价
                     let prevClose = 0;
                     if (realHistory.length >= 2) {
                         prevClose = realHistory[realHistory.length - 2].close;
                         hasDailyData = true;
                     } else if (realHistory.length === 1) {
-                         // 只有一天数据，可能是新股或数据不足，暂用 Open 代替 PrevClose
                          prevClose = realHistory[0].open;
                          hasDailyData = true;
                     }
 
-                    // 3. 计算昨日持仓数量 (Yesterday Shares)
-                    // 逻辑：昨日持仓 = 当前持仓 - 今日买入 + 今日卖出
-                    // 只有昨日持仓的部分，才参与当日盈亏计算（场景1：新买入不计算；场景4：卖出部分也计算）
+                    // 3. 计算昨日持仓数量
                     const todayStr = new Date().toISOString().split('T')[0];
                     const todayTrades = trades.filter(t => 
                         t.symbol === pos.symbol && 
@@ -339,13 +336,13 @@ export default function DashboardClient({
 
                     // 4. 执行计算
                     if (hasDailyData && prevClose > 0) {
-                        // 涨跌幅
-                        dailyChangePercent = (currentPrice - prevClose) / prevClose * 100;
+                        // 涨跌额与涨跌幅
+                        dailyChangeValue = currentPrice - prevClose; // 💡 计算差值
+                        dailyChangePercent = dailyChangeValue / prevClose * 100;
                         
-                        // 当日盈亏：只计算昨日留存的部分
-                        // 如果 yesterdayShares <= 0 (即场景1：全是今天新买的)，则 DailyPnL = 0
+                        // 当日盈亏
                         if (yesterdayShares > 0) {
-                            dailyPnL = yesterdayShares * (currentPrice - prevClose);
+                            dailyPnL = yesterdayShares * dailyChangeValue;
                         } else {
                             dailyPnL = 0;
                         }
@@ -371,10 +368,13 @@ export default function DashboardClient({
                               <div className="text-xl md:text-2xl font-bold text-slate-800 transition-colors duration-300 font-mono">
                                 ${Number(currentPrice).toFixed(2)}
                               </div>
-                              {/* 右上角：今日涨跌幅 */}
+                              {/* 💡 修改处：右上角显示 涨跌幅 + 涨跌额 */}
                               {hasDailyData && (
                                 <div className={`text-xs font-medium mt-1 ${dailyChangePercent >= 0 ? 'text-red-500' : 'text-green-500'}`}>
-                                    {dailyChangePercent >= 0 ? '+' : ''}{dailyChangePercent.toFixed(2)}% (Today)
+                                    {dailyChangePercent >= 0 ? '+' : ''}{dailyChangePercent.toFixed(2)}% 
+                                    <span className="ml-1 opacity-80">
+                                      ({dailyChangeValue >= 0 ? '+' : ''}{dailyChangeValue.toFixed(2)})
+                                    </span>
                                 </div>
                               )}
                             </div>
@@ -389,7 +389,7 @@ export default function DashboardClient({
                                 </span>
                             </div>
                             
-                            {/* 中间列：当日盈亏 (使用了新逻辑) */}
+                            {/* 中间列：当日盈亏 */}
                             <div className="flex flex-col text-center">
                                 <span className="text-[10px] text-slate-400 mb-0.5">当日盈亏</span>
                                 <div className={`text-xs md:text-sm font-semibold ${dailyPnL >= 0 ? 'text-red-500' : 'text-green-500'}`}>
