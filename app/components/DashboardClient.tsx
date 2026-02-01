@@ -72,6 +72,9 @@ export default function DashboardClient({
     const [historyMap, setHistoryMap] = useState(initialHistoryMap || {});
     const [isLive, setIsLive] = useState(false);
 
+    // 🔥 新增：用于存储实时报价 State
+    const [quotes, setQuotes] = useState<Record<string, { price: number, change: number }>>({});
+
   // 切换投资者
   const fetchInvestorData = async (id: string) => {
     setIsLive(false);
@@ -155,7 +158,31 @@ export default function DashboardClient({
             return { ...prevMap, [symbol]: newList };
           });
       })
+      // 🔥 新增：订阅实时报价更新
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'market_quotes' }, (payload: any) => {
+        const newQuote = payload.new;
+        if (newQuote) {
+          setQuotes(prev => ({
+            ...prev,
+            [newQuote.symbol]: { 
+              price: Number(newQuote.price), 
+              change: Number(newQuote.change_percent) 
+            }
+          }));
+        }
+      })
       .subscribe((status: string) => { if (status === 'SUBSCRIBED') setIsLive(true); });
+
+    // 🔥 新增：初始化时拉取一次最新报价
+    supabase.from('market_quotes').select('*').then(({ data }) => {
+      if (data) {
+        const initialQuotes: Record<string, any> = {};
+        data.forEach((q: any) => {
+          initialQuotes[q.symbol] = { price: Number(q.price), change: Number(q.change_percent) };
+        });
+        setQuotes(initialQuotes);
+      }
+    });
 
     return () => { supabase.removeChannel(channel); };
   }, [currentInvestorId]);
@@ -291,33 +318,48 @@ export default function DashboardClient({
                     const investedPrincipal = avgCost * quantity;
                     
                     const realHistory = historyMap[pos.symbol] || [];
-                    let currentPrice = pos.last_action_price || avgCost;
+                    
+                    // 🔥 核心逻辑优化：优先使用实时 Quotes 数据
+                    const quote = quotes[pos.symbol];
+                    let currentPrice = quote?.price ?? (pos.last_action_price || avgCost);
 
                     // ==========================================
                     // 核心逻辑：当日盈亏 & 涨跌额
                     // ==========================================
-                    let dailyChangePercent = 0;
-                    let dailyChangeValue = 0; // 💡 新增：涨跌额
+                    let dailyChangePercent = quote?.change ?? 0; // 优先使用实时涨跌幅
+                    let dailyChangeValue = 0;
                     let dailyPnL = 0;
                     let hasDailyData = false;
                     
-                    // 1. 确定当前价格
-                    if (realHistory.length > 0) {
-                        const lastCandle = realHistory[realHistory.length - 1];
-                        currentPrice = lastCandle.close;
-                    }
-
-                    // 2. 确定昨日收盘价
-                    let prevClose = 0;
-                    if (realHistory.length >= 2) {
-                        prevClose = realHistory[realHistory.length - 2].close;
+                    // 1. 计算涨跌额
+                    if (quote) {
+                        // 如果有实时涨跌幅，倒推昨日收盘价来计算涨跌额
+                        // price = prevClose * (1 + change/100) => prevClose = price / (1 + change/100)
+                        const prevClose = currentPrice / (1 + dailyChangePercent / 100);
+                        dailyChangeValue = currentPrice - prevClose;
                         hasDailyData = true;
-                    } else if (realHistory.length === 1) {
-                         prevClose = realHistory[0].open;
-                         hasDailyData = true;
+                    } else if (realHistory.length > 0) {
+                        // 降级逻辑：使用历史 K 线
+                        const lastCandle = realHistory[realHistory.length - 1];
+                        // 如果没有实时报价，暂时用 K 线收盘价
+                        if (!quote) currentPrice = lastCandle.close;
+                        
+                        let prevClose = 0;
+                        if (realHistory.length >= 2) {
+                            prevClose = realHistory[realHistory.length - 2].close;
+                            hasDailyData = true;
+                        } else if (realHistory.length === 1) {
+                            prevClose = realHistory[0].open;
+                            hasDailyData = true;
+                        }
+
+                        if (hasDailyData && prevClose > 0) {
+                            dailyChangeValue = currentPrice - prevClose;
+                            dailyChangePercent = (dailyChangeValue / prevClose) * 100;
+                        }
                     }
 
-                    // 3. 计算昨日持仓数量
+                    // 2. 计算昨日持仓数量 (用于展示当日盈亏)
                     const todayStr = new Date().toISOString().split('T')[0];
                     const todayTrades = trades.filter(t => 
                         t.symbol === pos.symbol && 
@@ -334,13 +376,8 @@ export default function DashboardClient({
 
                     const yesterdayShares = quantity - todayBuyQty + todaySellQty;
 
-                    // 4. 执行计算
-                    if (hasDailyData && prevClose > 0) {
-                        // 涨跌额与涨跌幅
-                        dailyChangeValue = currentPrice - prevClose; // 💡 计算差值
-                        dailyChangePercent = dailyChangeValue / prevClose * 100;
-                        
-                        // 当日盈亏
+                    // 3. 计算当日盈亏
+                    if (hasDailyData) {
                         if (yesterdayShares > 0) {
                             dailyPnL = yesterdayShares * dailyChangeValue;
                         } else {
@@ -351,7 +388,7 @@ export default function DashboardClient({
 
                     const marketValue = currentPrice * quantity;
                     const totalReturn = marketValue - investedPrincipal;
-                    const totalReturnPercent = avgCost > 0 ? (totalReturn / investedPrincipal) * 100 : 0;
+                    // const totalReturnPercent = avgCost > 0 ? (totalReturn / investedPrincipal) * 100 : 0;
                     const cnName = STOCK_NAMES[pos.symbol] || pos.symbol;
 
                     return (
@@ -368,7 +405,6 @@ export default function DashboardClient({
                               <div className="text-xl md:text-2xl font-bold text-slate-800 transition-colors duration-300 font-mono">
                                 ${Number(currentPrice).toFixed(2)}
                               </div>
-                              {/* 💡 修改处：右上角显示 涨跌幅 + 涨跌额 */}
                               {hasDailyData && (
                                 <div className={`text-xs font-medium mt-1 ${dailyChangePercent >= 0 ? 'text-red-500' : 'text-green-500'}`}>
                                     {dailyChangePercent >= 0 ? '+' : ''}{dailyChangePercent.toFixed(2)}% 

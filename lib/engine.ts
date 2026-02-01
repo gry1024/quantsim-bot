@@ -143,13 +143,31 @@ async function finalizePortfolio(investorId: string, finalCash: number, marketMa
   
   console.log(`   💰 [${investorId}] 结算完成: 现金 $${Math.round(finalCash).toLocaleString()} | 总值 $${Math.round(totalEquity).toLocaleString()}`);
 }
+// 新增：批量更新报价的函数
+async function updateRealTimeQuotes(marketMap: Record<string, MarketData>) {
+  const updates = Object.values(marketMap).map(m => ({
+    symbol: m.symbol,
+    price: m.price,
+    change_percent: m.changePercent,
+    updated_at: new Date().toISOString()
+  }));
 
+  if (updates.length === 0) return;
+
+  // 使用 upsert 更新价格
+  const { error } = await supabase
+    .from('market_quotes')
+    .upsert(updates, { onConflict: 'symbol' });
+
+  if (error) console.error('❌ 报价更新失败:', error.message);
+}
 // ================= 主逻辑 =================
 
 export async function runTradingBot() {
   const marketMap = await getMarketPrices();
   if (Object.keys(marketMap).length === 0) return;
-
+// 🔥 新增这一行：立即把实时价格推送到数据库
+  await updateRealTimeQuotes(marketMap);
   const todayStr = new Date().toDateString();
 
   // 1. 获取周线数据 (COIN 的数据会自动被同步和读取)
