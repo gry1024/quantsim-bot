@@ -71,10 +71,8 @@ export default function DashboardClient({
     const [historyMap, setHistoryMap] = useState(initialHistoryMap || {});
     const [isLive, setIsLive] = useState(false);
 
-    // 存储实时报价 State
     const [quotes, setQuotes] = useState<Record<string, { price: number, change: number }>>({});
 
-  // 切换投资者
   const fetchInvestorData = async (id: string) => {
     setIsLive(false);
     
@@ -112,7 +110,6 @@ export default function DashboardClient({
 
   const initialCapital = portfolio?.initial_capital || 1000000;
   const currentEquity = portfolio?.total_equity || initialCapital;
-  // 修正现金显示逻辑
   const cashBalance = portfolio?.cash_balance ?? initialCapital; 
 
   const pnl = currentEquity - initialCapital;
@@ -159,7 +156,6 @@ export default function DashboardClient({
             return { ...prevMap, [symbol]: newList };
           });
       })
-      // 订阅实时报价更新
       .on('postgres_changes', { event: '*', schema: 'public', table: 'market_quotes' }, (payload: any) => {
         const newQuote = payload.new;
         if (newQuote) {
@@ -174,7 +170,6 @@ export default function DashboardClient({
       })
       .subscribe((status: string) => { if (status === 'SUBSCRIBED') setIsLive(true); });
 
-    // 初始化时拉取一次最新报价
     supabase.from('market_quotes').select('*').then(({ data }) => {
       if (data) {
         const initialQuotes: Record<string, any> = {};
@@ -201,7 +196,6 @@ export default function DashboardClient({
     finalChartData.push({ time: todayStr, value: currentEquity });
   }
 
-  // 标准化持仓数据 (用于侧边栏和基础计算)
   const normalizedPositions = positions.map(p => ({
       ...p,
       quantity: p.shares ?? p.quantity ?? 0,
@@ -209,11 +203,6 @@ export default function DashboardClient({
       last_action_price: p.last_buy_price ?? p.last_action_price ?? 0
   }));
 
-  // =================================================================================
-  // 🔥 核心重构：当日盈亏计算逻辑
-  // =================================================================================
-  
-  // 1. 找出所有“活跃”标的
   const posSymbols = normalizedPositions.map(p => p.symbol);
   const tradeSymbolsToday = trades
     .filter(t => t.created_at.startsWith(todayStr))
@@ -227,7 +216,6 @@ export default function DashboardClient({
     const realHistory = historyMap[symbol] || [];
     const quote = quotes[symbol];
 
-    // A. 基础数据准备
     const currentShares = pos?.quantity || 0; 
     let todayBuyQty = 0;
     let todaySellQty = 0;
@@ -248,10 +236,8 @@ export default function DashboardClient({
         lastSellPrice = lastSell?.price || 0;
     }
 
-    // B. 推导昨日持仓
     const yesterdayShares = currentShares - todayBuyQty + todaySellQty;
 
-    // C. 获取昨日收盘价
     let yesterdayClose = 0;
     if (realHistory.length > 0) {
         const lastIdx = realHistory.length - 1;
@@ -262,26 +248,22 @@ export default function DashboardClient({
         }
     }
 
-    // D. 确定计算参考价 (用于计算盈亏)
     let currentPrice = quote?.price ?? (pos?.last_action_price || yesterdayClose);
     
     if (currentShares === 0 && lastSellPrice > 0) {
         currentPrice = lastSellPrice;
     }
 
-    // E. 计算当日盈亏
     let dailyPnL = 0;
     if (yesterdayShares > 0 && yesterdayClose > 0) {
         dailyPnL = yesterdayShares * (currentPrice - yesterdayClose);
     }
 
-    // F. 其他展示数据
     const dailyChangeValue = currentPrice - yesterdayClose;
     const dailyChangePercent = yesterdayClose > 0 ? (dailyChangeValue / yesterdayClose) * 100 : 0;
 
     const investedPrincipal = (pos?.average_cost || 0) * currentShares;
     
-    // 🔥 计算持仓市值 (Market Value) = 当前价格 * 当前股数
     const marketValue = currentPrice * currentShares; 
     const totalReturn = marketValue - investedPrincipal;
 
@@ -299,7 +281,7 @@ export default function DashboardClient({
         dailyChangeValue,
         totalReturn,
         investedPrincipal,
-        marketValue, // 新增：传递市值
+        marketValue,
         realHistory,
         isLiquidated 
     };
@@ -307,12 +289,10 @@ export default function DashboardClient({
   .filter(item => item.yesterdayShares > 0 || item.currentShares > 0) 
   .sort((a, b) => b.dailyPnL - a.dailyPnL); 
 
-  // =================================================================================
-
   return (
     <div className="flex h-screen bg-[#F8FAFC] font-sans text-slate-800 overflow-hidden">
       
-      {/* Sidebar */}
+      {/* Sidebar - Desktop Only */}
       <aside className="w-72 bg-white border-r border-slate-200 flex-col shadow-sm z-20 hidden md:flex h-full">
         <div className="p-6 border-b border-slate-100 shrink-0">
           <div className="flex items-center gap-3">
@@ -362,7 +342,7 @@ export default function DashboardClient({
         <header className="px-4 md:px-8 py-4 md:py-5 bg-white border-b border-slate-200 flex justify-between items-center z-10 shrink-0">
           <div className="flex items-center gap-3">
             <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-              <span className="hidden md:flex items-center gap-2">
+              <span className="flex items-center gap-2">
                 {activeView === 'monitor' ? <Layers size={18} className="text-slate-500" /> : <Trophy size={18} className="text-yellow-500" />}
                 {activeView === 'monitor' ? '控制仪表盘' : '资产排行榜'}
               </span>
@@ -382,22 +362,27 @@ export default function DashboardClient({
           </div>
         </header>
 
-        {/* Mobile Header Info */}
+        {/* Mobile Header - Enhanced Info */}
         <div className="md:hidden bg-white border-b border-slate-100 px-4 py-3 shrink-0">
             <InvestorSelector current={currentInvestorId} onChange={handleInvestorChange} />
              <div className="flex justify-between items-end mt-2">
              <div>
-               <div className="text-2xl font-light tracking-tight text-slate-900 leading-none">
+               <div className="text-xs text-slate-400 uppercase font-bold tracking-tighter mb-1">Net Worth</div>
+               <div className="text-xl font-bold tracking-tight text-slate-900 leading-none font-mono">
                  ${currentEquity.toLocaleString('en-US', { maximumFractionDigits: 0 })}
                </div>
              </div>
-             <div className={`text-sm font-medium ${isProfit ? 'text-red-500' : 'text-green-500'} flex items-center gap-1 mb-0.5`}>
-                {Math.abs(pnlPercent).toFixed(2)}%
+             <div className="text-right">
+                <div className="text-[10px] text-slate-400 uppercase font-bold tracking-tighter mb-1">PnL %</div>
+                <div className={`text-sm font-bold ${isProfit ? 'text-red-500' : 'text-green-500'} flex items-center justify-end gap-1`}>
+                    {isProfit ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
+                    {Math.abs(pnlPercent).toFixed(2)}%
+                </div>
              </div>
            </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 md:p-8 scroll-smooth pb-24 md:pb-8">
+        <div className="flex-1 overflow-y-auto p-3 md:p-8 scroll-smooth pb-24 md:pb-8">
           {activeView === 'leaderboard' ? (
             <LeaderboardView 
                 portfolios={allPortfolios} 
@@ -406,7 +391,19 @@ export default function DashboardClient({
             />
           ) : (
             <>
-              <section className="mb-6 md:mb-8 hidden md:block"><EquityChart data={finalChartData} /></section>
+              {/* Equity Chart - Visible on Mobile */}
+              <section className="mb-4 md:mb-8">
+                <EquityChart data={finalChartData} />
+              </section>
+
+              {/* Mobile Only: Asset Distribution Section */}
+              <section className="md:hidden mb-6 bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                 <div className="text-xs font-bold text-slate-400 uppercase mb-3 flex items-center gap-1">
+                    <PieChart size={14} /> 资产分布
+                 </div>
+                 <AssetDonut positions={normalizedPositions} cash={cashBalance} total={currentEquity} />
+              </section>
+
               <section className="mb-8">
                 <div className="flex items-center justify-between mb-4 px-1">
                   <h3 className="font-bold text-slate-700 flex items-center gap-2 text-sm md:text-base">
@@ -414,65 +411,56 @@ export default function DashboardClient({
                   </h3>
                 </div>
                 
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 md:gap-6">
                   {displayList.map((item) => (
                     <div 
                         key={item.symbol} 
                         className={`bg-white rounded-xl border ${item.isLiquidated ? 'border-dashed border-slate-300 opacity-80' : 'border-slate-200'} shadow-sm overflow-hidden flex flex-col`}
                     >
-                      <div className="p-4 md:p-5 border-b border-slate-50">
-                        <div className="flex justify-between items-start mb-4">
+                      <div className="p-3.5 md:p-5 border-b border-slate-50">
+                        <div className="flex justify-between items-start mb-3">
                           <div>
                             <div className="flex items-center gap-2">
-                              <h4 className="text-lg md:text-xl font-bold text-slate-900">{item.symbol}</h4>
-                              <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${item.isLiquidated ? 'bg-slate-200 text-slate-600' : 'bg-slate-100 text-slate-500'}`}>
-                                {item.isLiquidated ? '今日已清仓' : item.cnName}
+                              <h4 className="text-base md:text-xl font-bold text-slate-900">{item.symbol}</h4>
+                              <span className={`text-[10px] md:text-xs font-medium px-1.5 py-0.5 rounded ${item.isLiquidated ? 'bg-slate-200 text-slate-600' : 'bg-slate-100 text-slate-500'}`}>
+                                {item.isLiquidated ? '已清仓' : item.cnName}
                               </span>
                             </div>
                           </div>
                           <div className="text-right">
-                            <div className="text-xl md:text-2xl font-bold text-slate-800 transition-colors duration-300 font-mono">
+                            <div className="text-lg md:text-2xl font-bold text-slate-800 font-mono">
                               ${Number(item.currentPrice).toFixed(2)}
                             </div>
-                            <div className={`text-xs font-medium mt-1 ${item.dailyChangePercent >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                            <div className={`text-[10px] md:text-xs font-medium mt-0.5 ${item.dailyChangePercent >= 0 ? 'text-red-500' : 'text-green-500'}`}>
                                 {item.dailyChangePercent >= 0 ? '+' : ''}{item.dailyChangePercent.toFixed(2)}% 
-                                <span className="ml-1 opacity-80">
-                                  ({item.dailyChangeValue >= 0 ? '+' : ''}{item.dailyChangeValue.toFixed(2)})
-                                </span>
                             </div>
                           </div>
                         </div>
 
-                        {/* 底部数据网格 */}
-                        <div className="grid grid-cols-3 gap-2 py-2 bg-slate-50/50 rounded-lg px-2">
-                          
-                          {/* 🔄 修改处：显示持仓市值 (Market Value) */}
+                        <div className="grid grid-cols-3 gap-1 py-2 bg-slate-50/50 rounded-lg px-2">
                           <div className="flex flex-col">
-                              <span className="text-[10px] text-slate-400 mb-0.5">持仓市值</span>
-                              <span className="text-xs md:text-sm font-semibold text-slate-700">
+                              <span className="text-[9px] md:text-[10px] text-slate-400 mb-0.5">持仓市值</span>
+                              <span className="text-[11px] md:text-sm font-bold text-slate-700 font-mono">
                                   ${Math.round(item.marketValue).toLocaleString()}
                               </span>
                           </div>
-                          
                           <div className="flex flex-col text-center">
-                              <span className="text-[10px] text-slate-400 mb-0.5">当日盈亏</span>
-                              <div className={`text-xs md:text-sm font-semibold ${item.dailyPnL >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                              <span className="text-[9px] md:text-[10px] text-slate-400 mb-0.5">当日盈亏</span>
+                              <div className={`text-[11px] md:text-sm font-bold font-mono ${item.dailyPnL >= 0 ? 'text-red-500' : 'text-green-500'}`}>
                                  {item.dailyPnL >= 0 ? '+' : ''}{Math.round(item.dailyPnL).toLocaleString()}
                               </div>
                           </div>
-
                           <div className="flex flex-col text-right">
-                              <span className="text-[10px] text-slate-400 mb-0.5">总收益</span>
-                              <div className={`text-xs md:text-sm font-semibold ${item.totalReturn >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                              <span className="text-[9px] md:text-[10px] text-slate-400 mb-0.5">总收益</span>
+                              <div className={`text-[11px] md:text-sm font-bold font-mono ${item.totalReturn >= 0 ? 'text-red-500' : 'text-green-500'}`}>
                                   {item.isLiquidated ? '-' : (item.totalReturn >= 0 ? '+' : '') + Math.round(item.totalReturn).toLocaleString()}
                               </div>
                           </div>
                         </div>
                       </div>
                       
-                      {/* 图表区域 */}
-                      <div className="h-40 md:h-48 w-full relative bg-white pt-2">
-                         {item.realHistory.length > 0 ? <MiniCandleChart data={item.realHistory} /> : <div className="flex items-center justify-center h-full text-slate-400 text-xs">等待行情数据...</div>}
+                      <div className="h-32 md:h-48 w-full relative bg-white pt-1">
+                         {item.realHistory.length > 0 ? <MiniCandleChart data={item.realHistory} /> : <div className="flex items-center justify-center h-full text-slate-400 text-[10px]">等待行情数据...</div>}
                       </div>
                     </div>
                   ))}
@@ -504,22 +492,23 @@ export default function DashboardClient({
                       
                       return (
                         <div key={trade.id} className="grid grid-cols-2 md:grid-cols-6 px-4 md:px-6 py-3 md:py-3.5 items-center hover:bg-slate-50/80 transition-colors text-sm">
-                          {/* Mobile */}
+                          {/* Mobile Layout for Logs */}
                           <div className="md:hidden col-span-2 flex justify-between items-center mb-1">
-                              <span className="font-bold text-slate-800">{trade.symbol}</span>
-                              <span className="text-xs text-slate-400">
-                                {format(new Date(trade.created_at), 'yyyy-MM-dd HH:mm:ss')}
+                              <span className="font-bold text-slate-800 text-xs">{trade.symbol}</span>
+                              <span className="text-[10px] text-slate-400 font-mono">
+                                {format(new Date(trade.created_at), 'MM-dd HH:mm')}
                               </span>
                           </div>
                           <div className="md:hidden col-span-2 flex justify-between items-center text-xs">
                                <div className="flex items-center gap-2">
-                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${trade.action === 'BUY' ? 'bg-red-50 text-red-700 border-red-100' : 'bg-green-50 text-green-700 border-green-100'}`}>{trade.action === 'BUY' ? '买入' : '卖出'}</span>
-                                  <span className="font-mono">${Number(trade.price).toFixed(2)}</span>
+                                  <span className={`px-1 py-0.5 rounded text-[9px] font-bold border ${trade.action === 'BUY' ? 'bg-red-50 text-red-700 border-red-100' : 'bg-green-50 text-green-700 border-green-100'}`}>{trade.action === 'BUY' ? '买入' : '卖出'}</span>
+                                  <span className="font-mono text-[11px]">${Number(trade.price).toFixed(2)}</span>
                                   <span className="text-slate-300">|</span>
-                                  <span className="font-semibold text-slate-700">${Math.round(tradeAmount).toLocaleString()}</span>
+                                  <span className="font-bold text-slate-700 text-[11px]">${Math.round(tradeAmount).toLocaleString()}</span>
                                 </div>
+                                <div className="text-[10px] text-slate-400 italic truncate max-w-[100px]">{trade.reason}</div>
                           </div>
-                          {/* Desktop */}
+                          {/* Desktop Layout for Logs */}
                           <div className="hidden md:block col-span-1 text-slate-400 text-xs font-mono">
                              {format(new Date(trade.created_at), 'yyyy-MM-dd HH:mm:ss')}
                           </div>
@@ -537,19 +526,34 @@ export default function DashboardClient({
             </>
           )}
         </div>
-        
-        {/* Mobile Navbar */}
-        <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-6 py-2 flex justify-between items-center z-50 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] pb-safe">
-          <button onClick={() => setActiveView('monitor')} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition ${activeView === 'monitor' ? 'text-slate-900' : 'text-slate-400 hover:text-slate-600'}`}>
-            <LayoutDashboard size={20} className={activeView === 'monitor' ? 'fill-slate-900/10' : ''} />
-            <span className="text-[10px] font-medium">控制台</span>
-          </button>
-          <div className="w-px h-8 bg-slate-100"></div>
-          <button onClick={() => setActiveView('leaderboard')} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition ${activeView === 'leaderboard' ? 'text-yellow-500' : 'text-slate-400 hover:text-slate-600'}`}>
-            <Trophy size={20} className={activeView === 'leaderboard' ? 'fill-yellow-500/10' : ''} />
-            <span className="text-[10px] font-medium">排行榜</span>
-          </button>
+        {/* Mobile Navbar - Optimized Centering */}
+        <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 py-1 flex items-center z-50 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] pb-safe">
+          {/* 左侧区域容器：占一半宽度，内容居中 */}
+          <div className="flex-1 flex justify-center">
+            <button 
+                onClick={() => setActiveView('monitor')} 
+                className={`flex flex-col items-center gap-1 px-6 py-2 rounded-lg transition ${activeView === 'monitor' ? 'text-slate-900' : 'text-slate-400'}`}
+            >
+              <LayoutDashboard size={20} className={activeView === 'monitor' ? 'fill-slate-900/10' : ''} />
+              <span className="text-[10px] font-bold">控制台</span>
+            </button>
+          </div>
+
+          {/* 分隔线 */}
+          <div className="w-px h-6 bg-slate-100 shrink-0"></div>
+
+          {/* 右侧区域容器：占一半宽度，内容居中 */}
+          <div className="flex-1 flex justify-center">
+            <button 
+                onClick={() => setActiveView('leaderboard')} 
+                className={`flex flex-col items-center gap-1 px-6 py-2 rounded-lg transition ${activeView === 'leaderboard' ? 'text-yellow-500' : 'text-slate-400'}`}
+            >
+              <Trophy size={20} className={activeView === 'leaderboard' ? 'fill-yellow-500/10' : ''} />
+              <span className="text-[10px] font-bold">排行榜</span>
+            </button>
+          </div>
         </div>
+       
       </main>
     </div>
   );
