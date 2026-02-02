@@ -138,12 +138,16 @@ async function finalizePortfolio(investorId: string, finalCash: number, marketMa
     updated_at: new Date().toISOString()
   }).eq('investor_id', investorId);
 
-  await supabase.from('equity_snapshots').insert({
+  // ✨ 核心修改点：记录/更新每日资产快照
+  // 使用 "投资者ID_日期" 作为唯一 ID，确保每天只存一个点（保存当天最新值）
+  const todayNY = getNYDateString();
+  await supabase.from('equity_snapshots').upsert({
+    id: `${investorId}_${todayNY}`, 
     investor_id: investorId, 
     total_equity: totalEquity, 
     cash_balance: finalCash, 
     created_at: new Date().toISOString()
-  });
+  }, { onConflict: 'id' });
   
   console.log(`   💰 [${investorId}] 结算完成: 现金 $${Math.round(finalCash).toLocaleString()} | 总值 $${Math.round(totalEquity).toLocaleString()}`);
 }
@@ -169,7 +173,6 @@ export async function runTradingBot() {
 
   await updateRealTimeQuotes(marketMap);
   
-  // ✅ 核心修改 1：获取纽约时间的“今天”
   const todayNY = getNYDateString();
 
   const weeklyStatsMap: Record<string, { high: number; low: number }> = {};
@@ -209,8 +212,6 @@ export async function runTradingBot() {
 
       const pos = posMap.get(symbol) || null;
 
-      // ✅ 核心修改 2：使用纽约时间进行日期比对
-      // 即使服务器在北京时间已经跨过 0 点，只要纽约还没跨天，这里依然会被判定为同一天
       const isTradedToday = pos 
         ? getNYDateString(new Date(pos.updated_at)) === todayNY 
         : false;

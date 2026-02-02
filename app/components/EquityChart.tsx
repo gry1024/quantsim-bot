@@ -1,6 +1,7 @@
+// components/EquityChart.tsx
 'use client';
 
-import { createChart, ColorType, AreaSeries, Time } from 'lightweight-charts';
+import { createChart, ColorType, LineSeries, Time } from 'lightweight-charts';
 import { useEffect, useRef } from 'react';
 
 interface ChartProps {
@@ -9,11 +10,12 @@ interface ChartProps {
 
 export default function EquityChart({ data }: ChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<any>(null);
+  const seriesRef = useRef<any>(null);
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
-    // 1. 初始化图表
     const chart = createChart(chartContainerRef.current, {
       layout: {
         background: { type: ColorType.Solid, color: 'white' },
@@ -21,11 +23,11 @@ export default function EquityChart({ data }: ChartProps) {
         fontFamily: "'PingFang SC', 'Microsoft YaHei', sans-serif",
       },
       grid: {
-        vertLines: { visible: false }, // 隐藏竖向网格，保持干净
+        vertLines: { visible: false },
         horzLines: { color: '#F1F5F9', style: 1 },
       },
       width: chartContainerRef.current.clientWidth,
-      height: 320, // 💡 加高图表，让波动更明显
+      height: 320,
       rightPriceScale: {
         borderVisible: false,
         scaleMargins: { top: 0.2, bottom: 0.1 },
@@ -33,62 +35,46 @@ export default function EquityChart({ data }: ChartProps) {
       timeScale: {
         borderVisible: false,
         timeVisible: true,
-        secondsVisible: false,
       },
-      crosshair: {
-        // 💡 增强十字光标体验
-        vertLine: {
-          width: 1,
-          color: '#94A3B8',
-          style: 3,
-          labelBackgroundColor: '#94A3B8',
-        },
-        horzLine: {
-          width: 1,
-          color: '#94A3B8',
-          style: 3,
-          labelBackgroundColor: '#94A3B8',
-        },
-      },
-      handleScale: { mouseWheel: false },
+      handleScale: { mouseWheel: false, pinch: false },
     });
 
-    // 2. 添加面积图系列
-    const newSeries = chart.addSeries(AreaSeries, {
-      lineColor: '#2563EB', // 使用更专业的“金融蓝”
-      topColor: 'rgba(37, 99, 235, 0.2)',
-      bottomColor: 'rgba(37, 99, 235, 0.0)',
+    // ✨ 修改：使用 LineSeries (折线图) 替代 AreaSeries (面积图)
+    const newSeries = chart.addSeries(LineSeries, {
+      color: '#2563EB',
       lineWidth: 2,
-      priceFormat: {
-        type: 'price',
-        precision: 2,
-        minMove: 0.01,
-      },
+      priceFormat: { type: 'price', precision: 0, minMove: 1 },
     });
 
-    // 3. 注入数据
-    if (data && data.length > 0) {
-      const uniqueData = data.filter((item, index, self) =>
-        index === self.findIndex((t) => (t.time === item.time))
-      );
-      newSeries.setData(uniqueData);
-    }
+    chartRef.current = chart;
+    seriesRef.current = newSeries;
 
-    chart.timeScale().fitContent();
-
-    // 4. 响应式调整
     const handleResize = () => {
       if (chartContainerRef.current) {
         chart.applyOptions({ width: chartContainerRef.current.clientWidth });
       }
     };
-
     window.addEventListener('resize', handleResize);
 
     return () => {
       window.removeEventListener('resize', handleResize);
       chart.remove();
     };
+  }, []);
+
+  // 响应数据变化更新图表
+  useEffect(() => {
+    if (seriesRef.current && data && data.length > 0) {
+      // 排序并去重
+      const sortedData = [...data].sort((a, b) => (String(a.time) > String(b.time) ? 1 : -1));
+      const uniqueData = sortedData.filter((item, index, self) =>
+        index === self.findIndex((t) => t.time === item.time)
+      );
+      
+      seriesRef.current.setData(uniqueData);
+      // ✨ 确保显示范围覆盖：建仓(起点) -> 现总资产(终点)
+      chartRef.current.timeScale().fitContent(); 
+    }
   }, [data]);
 
   return (
@@ -96,10 +82,9 @@ export default function EquityChart({ data }: ChartProps) {
       <div className="flex items-center justify-between mb-4 px-2">
         <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-blue-600"></span>
-          资产净值走势 (Real-time)
+          资产净值走势 (实时同步)
         </h3>
       </div>
-      {/* 图表容器 */}
       <div ref={chartContainerRef} className="w-full rounded-xl border border-slate-100 shadow-sm overflow-hidden" />
     </div>
   );

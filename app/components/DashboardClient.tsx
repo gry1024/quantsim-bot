@@ -1,3 +1,4 @@
+// components/DashboardClient.tsx
 'use client';
 
 import { useState, useEffect } from 'react';
@@ -355,7 +356,8 @@ export default function DashboardClient({
           <hr className="border-slate-100" />
           <div className="min-h-[200px] pb-6">
             <div className="text-xs font-semibold text-slate-400 uppercase mb-2 flex items-center gap-1"><PieChart size={14} /> 仓位分布</div>
-            <AssetDonut positions={normalizedPositions} cash={cashBalance} total={currentEquity} />
+            {/* ✨ 核心修改：传入 quotes */}
+            <AssetDonut positions={normalizedPositions} cash={cashBalance} total={currentEquity} quotes={quotes} />
           </div>
         </div>
       </aside>
@@ -424,7 +426,8 @@ export default function DashboardClient({
                  <div className="text-xs font-bold text-slate-400 uppercase mb-3 flex items-center gap-1">
                     <PieChart size={14} /> 资产分布
                  </div>
-                 <AssetDonut positions={normalizedPositions} cash={cashBalance} total={currentEquity} />
+                 {/* ✨ 核心修改：传入 quotes */}
+                 <AssetDonut positions={normalizedPositions} cash={cashBalance} total={currentEquity} quotes={quotes} />
               </section>
 
               <section className="mb-8">
@@ -456,7 +459,6 @@ export default function DashboardClient({
                             </div>
                             <div className={`text-[10px] md:text-xs font-medium mt-0.5 ${item.dailyChangePercent >= 0 ? 'text-red-500' : 'text-green-500'}`}>
                                 {item.dailyChangePercent >= 0 ? '+' : ''}{item.dailyChangePercent.toFixed(2)}%
-                                {/* ✅ 修改处：新增了对应数值的显示 */}
                                 <span className="ml-1 opacity-90">
                                    ({item.dailyChangeValue >= 0 ? '+' : ''}{item.dailyChangeValue.toFixed(2)})
                                 </span>

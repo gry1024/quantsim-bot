@@ -1,3 +1,4 @@
+// components/AssetDonut.tsx
 'use client';
 
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
@@ -7,18 +8,21 @@ const COLORS = ['#3B82F6', '#10B981', '#6366F1', '#8B5CF6', '#F59E0B', '#EF4444'
 interface DonutProps {
   positions: any[];
   cash: number;
-  total: number; // 这里的 total 应该是外部传入的 total_equity
+  total: number;
+  // ✨ 新增：接收实时行情
+  quotes?: Record<string, { price: number; change: number }>;
 }
 
-export default function AssetDonut({ positions, cash, total }: DonutProps) {
+export default function AssetDonut({ positions, cash, total, quotes }: DonutProps) {
   
-  // 1. 构造标准数据格式
-  // 现金作为一个特殊的 Asset 参与饼图渲染
+  // 1. 构造数据：优先使用实时行情计算市值
   const data = [
     { name: '现金 (Cash)', value: Number(cash), symbol: 'USD' },
     ...positions.map(p => {
-      // 优先使用最后成交价或市场价来计算当前市值，而非成本
-      const price = p.last_action_price || p.avg_price || 0;
+      // ✨ 核心修改：如果有实时报价，优先用 quotes.price；否则回退到 last_action_price
+      const quote = quotes?.[p.symbol];
+      const price = quote?.price || p.last_action_price || p.avg_price || 0;
+      
       const marketValue = price * (p.quantity || p.shares || 0);
       return {
         name: p.symbol,
@@ -27,12 +31,13 @@ export default function AssetDonut({ positions, cash, total }: DonutProps) {
       };
     })
   ]
-  // 过滤掉价值极小的项，防止渲染重叠
-  .filter(item => item.value > 1)
+  .filter(item => item.value > 1) // 过滤掉极小值
   .sort((a, b) => b.value - a.value);
 
-  // 安全总额：防止除以0
-  const safeTotal = total > 0 ? total : 1;
+  // ✨ 核心修改：重新计算实时总资产 (Cash + Realtime Market Value)
+  // 这样中心的 "Net Worth" 也会随行情跳动
+  const calculatedTotal = data.reduce((acc, item) => acc + item.value, 0);
+  const safeTotal = calculatedTotal > 0 ? calculatedTotal : (total > 0 ? total : 1);
 
   return (
     <div className="flex flex-col w-full">
@@ -55,7 +60,6 @@ export default function AssetDonut({ positions, cash, total }: DonutProps) {
                 <Cell key={`cell-${index}`} fill={entry.symbol === 'USD' ? '#CBD5E1' : COLORS[index % COLORS.length]} />
               ))}
             </Pie>
-            {/* ✅ 修复点：将 value 类型放宽为 any，并强制转为 Number 后再格式化 */}
             <Tooltip 
               formatter={(value: any) => [`$${Number(value).toLocaleString()}`, '市值']}
               contentStyle={{ 
@@ -69,14 +73,16 @@ export default function AssetDonut({ positions, cash, total }: DonutProps) {
           </PieChart>
         </ResponsiveContainer>
         
-        {/* 中心文字 */}
+        {/* 中心文字：实时净值 */}
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
           <span className="text-[10px] text-slate-400 uppercase tracking-wider">Net Worth</span>
-          <span className="text-sm font-bold text-slate-800">${(safeTotal / 1000).toFixed(1)}k</span>
+          <span className="text-sm font-bold text-slate-800">
+            ${(safeTotal / 1000).toFixed(1)}k
+          </span>
         </div>
       </div>
 
-      {/* 列表区域 */}
+      {/* 列表区域：实时数值 */}
       <div className="mt-1 w-full px-2 pb-2 space-y-2 max-h-[200px] overflow-y-auto custom-scrollbar">
         {data.map((item, index) => {
           const percent = (item.value / safeTotal) * 100;
