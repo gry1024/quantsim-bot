@@ -4,6 +4,19 @@ import { STRATEGIES } from './strategies';
 import { MarketData, Position, TradeDecision } from './type';
 
 /**
+ * 【新增】获取美东时间（New York）下的 YYYY-MM-DD 字符串
+ * 确保无论服务器在全球哪个位置，判断“今天”的标准与美股开盘地一致
+ */
+function getNYDateString(date: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+/**
  * 获取最近7天的高低点 (用于兵王策略)
  */
 async function getWeeklyStats(symbol: string): Promise<{ high: number; low: number } | null> {
@@ -44,16 +57,12 @@ async function getMarketPrices(): Promise<Record<string, MarketData>> {
     const marketData: Record<string, MarketData> = {};
     
     text.split('\n').forEach((line) => {
-      // 兼容大小写的正则
       const match = line.match(/gb_(\w+)="([^"]+)"/);
       if (match) {
         const symbol = match[1].toUpperCase();
         const parts = match[2].split(',');
         const price = parseFloat(parts[1]);
         
-        // 调试日志（确认修复后可注释掉）
-        // console.log(`🔍 解析: ${symbol} = ${price}`);
-
         if (!isNaN(price) && price > 0) {
           marketData[symbol] = { 
             symbol, 
@@ -70,6 +79,7 @@ async function getMarketPrices(): Promise<Record<string, MarketData>> {
     return {};
   }
 }
+
 /**
  * 执行交易 (更新 positions 和 trades)
  */
@@ -92,7 +102,6 @@ async function executeUpdate(id: string, sym: string, action: 'BUY' | 'SELL', sh
     newShares -= shares;
   }
 
-  // 防止浮点数误差
   if (newShares <= 0.001) {
     await supabase.from('positions').delete().eq('investor_id', id).eq('symbol', sym);
   } else {
@@ -123,16 +132,11 @@ async function finalizePortfolio(investorId: string, finalCash: number, marketMa
   }
   const totalEquity = finalCash + marketValue;
 
-  const { error } = await supabase.from('portfolio').update({
+  await supabase.from('portfolio').update({
     cash_balance: finalCash,
     total_equity: totalEquity,
     updated_at: new Date().toISOString()
   }).eq('investor_id', investorId);
-
-  if (error) {
-    console.error(`   ❌ [${investorId}] 资产更新失败: ${error.message}`);
-    return; 
-  }
 
   await supabase.from('equity_snapshots').insert({
     investor_id: investorId, 
@@ -143,7 +147,7 @@ async function finalizePortfolio(investorId: string, finalCash: number, marketMa
   
   console.log(`   💰 [${investorId}] 结算完成: 现金 $${Math.round(finalCash).toLocaleString()} | 总值 $${Math.round(totalEquity).toLocaleString()}`);
 }
-// 新增：批量更新报价的函数
+
 async function updateRealTimeQuotes(marketMap: Record<string, MarketData>) {
   const updates = Object.values(marketMap).map(m => ({
     symbol: m.symbol,
@@ -154,30 +158,26 @@ async function updateRealTimeQuotes(marketMap: Record<string, MarketData>) {
 
   if (updates.length === 0) return;
 
-  // 使用 upsert 更新价格
-  const { error } = await supabase
-    .from('market_quotes')
-    .upsert(updates, { onConflict: 'symbol' });
-
-  if (error) console.error('❌ 报价更新失败:', error.message);
+  await supabase.from('market_quotes').upsert(updates, { onConflict: 'symbol' });
 }
+
 // ================= 主逻辑 =================
 
 export async function runTradingBot() {
   const marketMap = await getMarketPrices();
   if (Object.keys(marketMap).length === 0) return;
-// 🔥 新增这一行：立即把实时价格推送到数据库
-  await updateRealTimeQuotes(marketMap);
-  const todayStr = new Date().toDateString();
 
-  // 1. 获取周线数据 (COIN 的数据会自动被同步和读取)
+  await updateRealTimeQuotes(marketMap);
+  
+  // ✅ 核心修改 1：获取纽约时间的“今天”
+  const todayNY = getNYDateString();
+
   const weeklyStatsMap: Record<string, { high: number; low: number }> = {};
   await Promise.all(CONFIG.SYMBOLS.map(async (sym) => {
     const stats = await getWeeklyStats(sym);
     if (stats) weeklyStatsMap[sym] = stats;
   }));
 
-  // 2. 遍历投资者
   for (const investor of INVESTORS) {
     console.log(`👤 分析: ${investor.name}`);
 
@@ -203,13 +203,17 @@ export async function runTradingBot() {
         estimatedEquity += p.shares * (marketMap[p.symbol]?.price || p.last_action_price); 
     });
 
-    // 3. 遍历代码 (现在包含 COIN)
     for (const symbol of CONFIG.SYMBOLS) {
       const market = marketMap[symbol];
       if (!market) continue;
 
       const pos = posMap.get(symbol) || null;
-      const isTradedToday = pos ? new Date(pos.updated_at).toDateString() === todayStr : false;
+
+      // ✅ 核心修改 2：使用纽约时间进行日期比对
+      // 即使服务器在北京时间已经跨过 0 点，只要纽约还没跨天，这里依然会被判定为同一天
+      const isTradedToday = pos 
+        ? getNYDateString(new Date(pos.updated_at)) === todayNY 
+        : false;
 
       const strategy = STRATEGIES[investor.id];
       if (!strategy) continue;
