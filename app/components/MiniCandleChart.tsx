@@ -49,13 +49,20 @@ export default function MiniCandleChart({ data }: MiniCandleChartProps) {
         vertLines: { visible: false },
         horzLines: { color: 'rgba(42, 46, 57, 0.05)', style: 1 },
       },
-      rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.2, bottom: 0.1 } },
-      timeScale: { borderVisible: true, borderColor: '#E2E8F0', visible: true },
+      rightPriceScale: { 
+        borderVisible: false, 
+        scaleMargins: { top: 0.2, bottom: 0.1 } 
+      },
+      timeScale: { 
+        borderVisible: true, 
+        borderColor: '#E2E8F0', 
+        visible: true 
+      },
     });
 
     chartRef.current = chart;
 
-    // 1. K 线系列
+    // 1. K 线系列 (保留标签，作为实时价格显示)
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#EF4444',
       downColor: '#10B981',
@@ -65,12 +72,13 @@ export default function MiniCandleChart({ data }: MiniCandleChartProps) {
     });
     candleSeriesRef.current = candleSeries;
 
-    // 2. MA5 均线系列
+    // 2. MA5 均线系列 (隐藏右侧标签)
     const maSeries = chart.addSeries(LineSeries, {
       color: '#3B82F6',
       lineWidth: 1, 
-      priceLineVisible: false, 
-      crosshairMarkerVisible: false,
+      priceLineVisible: false,      // 隐藏贯穿图表的横线
+      lastValueVisible: false,      // ✅ 核心修改：隐藏右侧刻度上的数值标签
+      crosshairMarkerVisible: false // 移动时隐藏圆点标记
     });
     maSeriesRef.current = maSeries;
 
