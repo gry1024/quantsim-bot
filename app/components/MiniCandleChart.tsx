@@ -1,3 +1,4 @@
+// app/components/MiniCandleChart.tsx
 'use client';
 
 import { useEffect, useRef } from 'react';
@@ -45,7 +46,7 @@ export default function MiniCandleChart({ data }: MiniCandleChartProps) {
       
       localization: {
         locale: 'zh-CN',
-        dateFormat: 'yyyy-MM-dd',
+        dateFormat: 'yyyy-MM-dd', // 十字光标日期格式
       },
 
       grid: {
@@ -66,7 +67,7 @@ export default function MiniCandleChart({ data }: MiniCandleChartProps) {
       },
 
       crosshair: {
-        mode: CrosshairMode.Normal,
+        mode: CrosshairMode.Normal, // 启用十字光标
         vertLine: {
           width: 1,
           color: 'rgba(37, 99, 235, 0.5)',
@@ -84,19 +85,19 @@ export default function MiniCandleChart({ data }: MiniCandleChartProps) {
       rightPriceScale: {
         borderVisible: false,
         scaleMargins: { top: 0.1, bottom: 0.1 },
-        visible: true,
+        visible: true, // 确保显示价格轴标签
       },
 
       timeScale: {
         borderVisible: true,
         borderColor: '#E2E8F0',
-        timeVisible: true,
+        timeVisible: true, // 确保显示时间轴标签
         secondsVisible: false,
         visible: true,
-        rightOffset: 5,
-        fixLeftEdge: true, // 防止拖动到第一根K线之前的空白处
-        fixRightEdge: true, // 防止拖动到最后一根K线之后的空白处
-        tickMarkFormatter: (time: any, tickMarkType: any, locale: any) => {
+        rightOffset: 5, // 右侧保留一点空隙
+        fixLeftEdge: true, 
+        fixRightEdge: true, 
+        tickMarkFormatter: (time: any) => {
           const date = new Date(time);
           return `${date.getMonth() + 1}/${date.getDate()}`;
         },
@@ -123,7 +124,6 @@ export default function MiniCandleChart({ data }: MiniCandleChartProps) {
           width: chartContainerRef.current.clientWidth,
           height: chartContainerRef.current.clientHeight
         });
-        // 窗口调整时，保持当前的逻辑范围，不强制 fitContent
       }
     };
     window.addEventListener('resize', handleResize);
@@ -144,19 +144,10 @@ export default function MiniCandleChart({ data }: MiniCandleChartProps) {
       );
       seriesRef.current.setData(uniqueData as any);
       
-      // ✅ 关键优化：智能适配视图
-      // 如果数据非常多（>100条），只默认展示最近 100 条，保持 K 线清晰度，同时允许用户向左拖动查看历史。
-      // 如果数据较少，则展示全部。
+      // ✅ 修改核心：移除 >100 条的限制，强制适配所有内容
+      // 这将确保显示数据集中所有日期，且最右侧对齐到最新数据（当天）
       if (chartRef.current) {
-        const total = uniqueData.length;
-        if (total > 100) {
-          chartRef.current.timeScale().setVisibleLogicalRange({
-            from: total - 100, // 从倒数第 100 条开始
-            to: total,         // 到最后一条
-          });
-        } else {
-          chartRef.current.timeScale().fitContent(); 
-        }
+        chartRef.current.timeScale().fitContent(); 
       }
     }
   }, [data]);
