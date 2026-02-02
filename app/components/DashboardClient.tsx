@@ -8,7 +8,7 @@ import {
   Clock, RefreshCcw, Layers, BarChart3, PieChart,
   LayoutDashboard, Trophy
 } from 'lucide-react';
-import { formatDistanceToNow } from 'date-fns';
+import { format } from 'date-fns'; // 👈 修改：引入 format 用于精确时间
 import { zhCN } from 'date-fns/locale';
 import EquityChart from './EquityChart';
 import MiniCandleChart from './MiniCandleChart';
@@ -113,7 +113,10 @@ export default function DashboardClient({
 
   const initialCapital = portfolio?.initial_capital || 1000000;
   const currentEquity = portfolio?.total_equity || initialCapital;
-  const cashBalance = portfolio?.cash_balance || 0;
+  // 👈 修改：修正现金显示逻辑。使用 ?? 运算符，确保当 portfolio 为空对象时（undefined），回退到 initialCapital（即全现金状态）
+  // 之前的 || 0 会导致初始状态下现金显示为 $0
+  const cashBalance = portfolio?.cash_balance ?? initialCapital; 
+
   const pnl = currentEquity - initialCapital;
   const pnlPercent = (pnl / initialCapital) * 100;
   const isProfit = pnl >= 0;
@@ -479,7 +482,10 @@ export default function DashboardClient({
                           {/* Mobile */}
                           <div className="md:hidden col-span-2 flex justify-between items-center mb-1">
                               <span className="font-bold text-slate-800">{trade.symbol}</span>
-                              <span className="text-xs text-slate-400">{formatDistanceToNow(new Date(trade.created_at), { addSuffix: true, locale: zhCN })}</span>
+                              {/* 👈 修改：手机端时间格式化 */}
+                              <span className="text-xs text-slate-400">
+                                {format(new Date(trade.created_at), 'yyyy-MM-dd HH:mm:ss')}
+                              </span>
                           </div>
                           <div className="md:hidden col-span-2 flex justify-between items-center text-xs">
                                <div className="flex items-center gap-2">
@@ -490,7 +496,10 @@ export default function DashboardClient({
                                 </div>
                           </div>
                           {/* Desktop */}
-                          <div className="hidden md:block col-span-1 text-slate-400 text-xs">{formatDistanceToNow(new Date(trade.created_at), { addSuffix: true, locale: zhCN })}</div>
+                          {/* 👈 修改：桌面端时间格式化 */}
+                          <div className="hidden md:block col-span-1 text-slate-400 text-xs font-mono">
+                             {format(new Date(trade.created_at), 'yyyy-MM-dd HH:mm:ss')}
+                          </div>
                           <div className="hidden md:block col-span-1 font-bold text-slate-800">{trade.symbol}</div>
                           <div className="hidden md:block col-span-1"><span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${trade.action === 'BUY' ? 'bg-red-50 text-red-700 border-red-100' : 'bg-green-50 text-green-700 border-green-100'}`}>{trade.action === 'BUY' ? '买入' : '卖出'}</span></div>
                           <div className="hidden md:block col-span-1 text-right font-medium text-slate-700 font-mono">${Number(trade.price).toFixed(2)}</div>
