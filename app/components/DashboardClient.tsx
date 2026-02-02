@@ -213,8 +213,31 @@ export default function DashboardClient({
   const displayList = allActiveSymbols.map(symbol => {
     const pos = normalizedPositions.find(p => p.symbol === symbol);
     const symbolTrades = trades.filter(t => t.symbol === symbol && t.created_at.startsWith(todayStr));
-    const realHistory = historyMap[symbol] || [];
+    
+    // 纽约时间
+    const nyDate = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date());
+
+    let realHistory = historyMap[symbol] || [];
     const quote = quotes[symbol];
+
+    // 强行用实时价格更新 K 线
+    if (quote && realHistory.length > 0) {
+       const lastIdx = realHistory.length - 1;
+       const lastCandle = realHistory[lastIdx];
+       
+       if (lastCandle.time === nyDate) {
+         realHistory = [...realHistory];
+         realHistory[lastIdx] = {
+           ...lastCandle,
+           close: quote.price,
+           high: Math.max(lastCandle.high, quote.price),
+           low: Math.min(lastCandle.low, quote.price)
+         };
+       }
+    }
 
     const currentShares = pos?.quantity || 0; 
     let todayBuyQty = 0;
@@ -241,7 +264,7 @@ export default function DashboardClient({
     let yesterdayClose = 0;
     if (realHistory.length > 0) {
         const lastIdx = realHistory.length - 1;
-        if (realHistory[lastIdx].time === todayStr) {
+        if (realHistory[lastIdx].time === nyDate) {
             yesterdayClose = realHistory.length >= 2 ? realHistory[lastIdx - 1].close : realHistory[lastIdx].open;
         } else {
             yesterdayClose = realHistory[lastIdx].close;
@@ -432,7 +455,11 @@ export default function DashboardClient({
                               ${Number(item.currentPrice).toFixed(2)}
                             </div>
                             <div className={`text-[10px] md:text-xs font-medium mt-0.5 ${item.dailyChangePercent >= 0 ? 'text-red-500' : 'text-green-500'}`}>
-                                {item.dailyChangePercent >= 0 ? '+' : ''}{item.dailyChangePercent.toFixed(2)}% 
+                                {item.dailyChangePercent >= 0 ? '+' : ''}{item.dailyChangePercent.toFixed(2)}%
+                                {/* ✅ 修改处：新增了对应数值的显示 */}
+                                <span className="ml-1 opacity-90">
+                                   ({item.dailyChangeValue >= 0 ? '+' : ''}{item.dailyChangeValue.toFixed(2)})
+                                </span>
                             </div>
                           </div>
                         </div>
