@@ -8,8 +8,7 @@ import {
   Clock, RefreshCcw, Layers, BarChart3, PieChart,
   LayoutDashboard, Trophy
 } from 'lucide-react';
-import { format } from 'date-fns'; // 👈 修改：引入 format 用于精确时间
-import { zhCN } from 'date-fns/locale';
+import { format } from 'date-fns'; 
 import EquityChart from './EquityChart';
 import MiniCandleChart from './MiniCandleChart';
 import AssetDonut from './AssetDonut';
@@ -72,7 +71,7 @@ export default function DashboardClient({
     const [historyMap, setHistoryMap] = useState(initialHistoryMap || {});
     const [isLive, setIsLive] = useState(false);
 
-    // 🔥 新增：用于存储实时报价 State
+    // 存储实时报价 State
     const [quotes, setQuotes] = useState<Record<string, { price: number, change: number }>>({});
 
   // 切换投资者
@@ -113,8 +112,7 @@ export default function DashboardClient({
 
   const initialCapital = portfolio?.initial_capital || 1000000;
   const currentEquity = portfolio?.total_equity || initialCapital;
-  // 👈 修改：修正现金显示逻辑。使用 ?? 运算符，确保当 portfolio 为空对象时（undefined），回退到 initialCapital（即全现金状态）
-  // 之前的 || 0 会导致初始状态下现金显示为 $0
+  // 修正现金显示逻辑
   const cashBalance = portfolio?.cash_balance ?? initialCapital; 
 
   const pnl = currentEquity - initialCapital;
@@ -161,7 +159,7 @@ export default function DashboardClient({
             return { ...prevMap, [symbol]: newList };
           });
       })
-      // 🔥 新增：订阅实时报价更新
+      // 订阅实时报价更新
       .on('postgres_changes', { event: '*', schema: 'public', table: 'market_quotes' }, (payload: any) => {
         const newQuote = payload.new;
         if (newQuote) {
@@ -176,7 +174,7 @@ export default function DashboardClient({
       })
       .subscribe((status: string) => { if (status === 'SUBSCRIBED') setIsLive(true); });
 
-    // 🔥 新增：初始化时拉取一次最新报价
+    // 初始化时拉取一次最新报价
     supabase.from('market_quotes').select('*').then(({ data }) => {
       if (data) {
         const initialQuotes: Record<string, any> = {};
@@ -203,12 +201,113 @@ export default function DashboardClient({
     finalChartData.push({ time: todayStr, value: currentEquity });
   }
 
+  // 标准化持仓数据 (用于侧边栏和基础计算)
   const normalizedPositions = positions.map(p => ({
       ...p,
       quantity: p.shares ?? p.quantity ?? 0,
       average_cost: p.avg_price ?? p.average_cost ?? 0,
       last_action_price: p.last_buy_price ?? p.last_action_price ?? 0
   }));
+
+  // =================================================================================
+  // 🔥 核心重构：当日盈亏计算逻辑
+  // =================================================================================
+  
+  // 1. 找出所有“活跃”标的
+  const posSymbols = normalizedPositions.map(p => p.symbol);
+  const tradeSymbolsToday = trades
+    .filter(t => t.created_at.startsWith(todayStr))
+    .map(t => t.symbol);
+  
+  const allActiveSymbols = Array.from(new Set([...posSymbols, ...tradeSymbolsToday]));
+
+  const displayList = allActiveSymbols.map(symbol => {
+    const pos = normalizedPositions.find(p => p.symbol === symbol);
+    const symbolTrades = trades.filter(t => t.symbol === symbol && t.created_at.startsWith(todayStr));
+    const realHistory = historyMap[symbol] || [];
+    const quote = quotes[symbol];
+
+    // A. 基础数据准备
+    const currentShares = pos?.quantity || 0; 
+    let todayBuyQty = 0;
+    let todaySellQty = 0;
+    let lastSellPrice = 0;
+
+    const sortedTodayTrades = [...symbolTrades].sort((a, b) => 
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+    
+    symbolTrades.forEach(t => {
+        const q = t.shares ?? t.quantity ?? 0;
+        if (t.action === 'BUY') todayBuyQty += q;
+        if (t.action === 'SELL') todaySellQty += q;
+    });
+
+    if (sortedTodayTrades.length > 0) {
+        const lastSell = sortedTodayTrades.find(t => t.action === 'SELL');
+        lastSellPrice = lastSell?.price || 0;
+    }
+
+    // B. 推导昨日持仓
+    const yesterdayShares = currentShares - todayBuyQty + todaySellQty;
+
+    // C. 获取昨日收盘价
+    let yesterdayClose = 0;
+    if (realHistory.length > 0) {
+        const lastIdx = realHistory.length - 1;
+        if (realHistory[lastIdx].time === todayStr) {
+            yesterdayClose = realHistory.length >= 2 ? realHistory[lastIdx - 1].close : realHistory[lastIdx].open;
+        } else {
+            yesterdayClose = realHistory[lastIdx].close;
+        }
+    }
+
+    // D. 确定计算参考价 (用于计算盈亏)
+    let currentPrice = quote?.price ?? (pos?.last_action_price || yesterdayClose);
+    
+    if (currentShares === 0 && lastSellPrice > 0) {
+        currentPrice = lastSellPrice;
+    }
+
+    // E. 计算当日盈亏
+    let dailyPnL = 0;
+    if (yesterdayShares > 0 && yesterdayClose > 0) {
+        dailyPnL = yesterdayShares * (currentPrice - yesterdayClose);
+    }
+
+    // F. 其他展示数据
+    const dailyChangeValue = currentPrice - yesterdayClose;
+    const dailyChangePercent = yesterdayClose > 0 ? (dailyChangeValue / yesterdayClose) * 100 : 0;
+
+    const investedPrincipal = (pos?.average_cost || 0) * currentShares;
+    
+    // 🔥 计算持仓市值 (Market Value) = 当前价格 * 当前股数
+    const marketValue = currentPrice * currentShares; 
+    const totalReturn = marketValue - investedPrincipal;
+
+    const cnName = STOCK_NAMES[symbol] || symbol;
+    const isLiquidated = currentShares === 0;
+
+    return {
+        symbol,
+        cnName,
+        currentShares,
+        currentPrice,
+        yesterdayShares,
+        dailyPnL,
+        dailyChangePercent,
+        dailyChangeValue,
+        totalReturn,
+        investedPrincipal,
+        marketValue, // 新增：传递市值
+        realHistory,
+        isLiquidated 
+    };
+  })
+  .filter(item => item.yesterdayShares > 0 || item.currentShares > 0) 
+  .sort((a, b) => b.dailyPnL - a.dailyPnL); 
+
+  // =================================================================================
 
   return (
     <div className="flex h-screen bg-[#F8FAFC] font-sans text-slate-800 overflow-hidden">
@@ -272,7 +371,7 @@ export default function DashboardClient({
           
           <div className="flex gap-2 md:gap-4 items-center">
             <div className="flex items-center gap-1.5 px-2 md:px-3 py-1 bg-slate-50 rounded-full border border-slate-100">
-                <div className={`w-1.5 h-1.5 md:w-2 md:h-2 rounded-full ${isLive ? 'bg-green-500 animate-pulse' : 'bg-slate-300'}`}></div>
+                <div className={`w-1.5 h-1.5 md:w-2 md:h-2 rounded-full ${isLive ? 'bg-green-50 animate-pulse' : 'bg-slate-300'}`}></div>
                 <span className="text-[9px] md:text-[10px] font-medium text-slate-500 uppercase tracking-wide">
                     {isLive ? 'LIVE' : 'CONNECTING'}
                 </span>
@@ -311,151 +410,77 @@ export default function DashboardClient({
               <section className="mb-8">
                 <div className="flex items-center justify-between mb-4 px-1">
                   <h3 className="font-bold text-slate-700 flex items-center gap-2 text-sm md:text-base">
-                    <BarChart3 size={18} /> 持仓监控 ({normalizedPositions.length})
+                    <BarChart3 size={18} /> 持仓监控 (Live)
                   </h3>
                 </div>
+                
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
-                  {normalizedPositions?.map((pos: any) => {
-                    const avgCost = pos.average_cost || 0;
-                    const quantity = pos.quantity || 0;
-                    const investedPrincipal = avgCost * quantity;
-                    
-                    const realHistory = historyMap[pos.symbol] || [];
-                    
-                    // 🔥 核心逻辑优化：优先使用实时 Quotes 数据
-                    const quote = quotes[pos.symbol];
-                    let currentPrice = quote?.price ?? (pos.last_action_price || avgCost);
-
-                    // ==========================================
-                    // 核心逻辑：当日盈亏 & 涨跌额
-                    // ==========================================
-                    let dailyChangePercent = quote?.change ?? 0; // 优先使用实时涨跌幅
-                    let dailyChangeValue = 0;
-                    let dailyPnL = 0;
-                    let hasDailyData = false;
-                    
-                    // 1. 计算涨跌额
-                    if (quote) {
-                        // 如果有实时涨跌幅，倒推昨日收盘价来计算涨跌额
-                        // price = prevClose * (1 + change/100) => prevClose = price / (1 + change/100)
-                        const prevClose = currentPrice / (1 + dailyChangePercent / 100);
-                        dailyChangeValue = currentPrice - prevClose;
-                        hasDailyData = true;
-                    } else if (realHistory.length > 0) {
-                        // 降级逻辑：使用历史 K 线
-                        const lastCandle = realHistory[realHistory.length - 1];
-                        // 如果没有实时报价，暂时用 K 线收盘价
-                        if (!quote) currentPrice = lastCandle.close;
-                        
-                        let prevClose = 0;
-                        if (realHistory.length >= 2) {
-                            prevClose = realHistory[realHistory.length - 2].close;
-                            hasDailyData = true;
-                        } else if (realHistory.length === 1) {
-                            prevClose = realHistory[0].open;
-                            hasDailyData = true;
-                        }
-
-                        if (hasDailyData && prevClose > 0) {
-                            dailyChangeValue = currentPrice - prevClose;
-                            dailyChangePercent = (dailyChangeValue / prevClose) * 100;
-                        }
-                    }
-
-                    // 2. 计算昨日持仓数量 (用于展示当日盈亏)
-                    const todayStr = new Date().toISOString().split('T')[0];
-                    const todayTrades = trades.filter(t => 
-                        t.symbol === pos.symbol && 
-                        t.created_at.startsWith(todayStr)
-                    );
-
-                    let todayBuyQty = 0;
-                    let todaySellQty = 0;
-                    todayTrades.forEach(t => {
-                        const q = t.shares ?? t.quantity ?? 0;
-                        if (t.action === 'BUY') todayBuyQty += q;
-                        if (t.action === 'SELL') todaySellQty += q;
-                    });
-
-                    const yesterdayShares = quantity - todayBuyQty + todaySellQty;
-
-                    // 3. 计算当日盈亏
-                    if (hasDailyData) {
-                        if (yesterdayShares > 0) {
-                            dailyPnL = yesterdayShares * dailyChangeValue;
-                        } else {
-                            dailyPnL = 0;
-                        }
-                    }
-                    // ==========================================
-
-                    const marketValue = currentPrice * quantity;
-                    const totalReturn = marketValue - investedPrincipal;
-                    // const totalReturnPercent = avgCost > 0 ? (totalReturn / investedPrincipal) * 100 : 0;
-                    const cnName = STOCK_NAMES[pos.symbol] || pos.symbol;
-
-                    return (
-                      <div key={pos.symbol} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
-                        <div className="p-4 md:p-5 border-b border-slate-50">
-                          <div className="flex justify-between items-start mb-4">
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <h4 className="text-lg md:text-xl font-bold text-slate-900">{pos.symbol}</h4>
-                                <span className="text-xs text-slate-500 font-medium px-1.5 py-0.5 bg-slate-100 rounded">{cnName}</span>
-                              </div>
-                            </div>
-                            <div className="text-right">
-                              <div className="text-xl md:text-2xl font-bold text-slate-800 transition-colors duration-300 font-mono">
-                                ${Number(currentPrice).toFixed(2)}
-                              </div>
-                              {hasDailyData && (
-                                <div className={`text-xs font-medium mt-1 ${dailyChangePercent >= 0 ? 'text-red-500' : 'text-green-500'}`}>
-                                    {dailyChangePercent >= 0 ? '+' : ''}{dailyChangePercent.toFixed(2)}% 
-                                    <span className="ml-1 opacity-80">
-                                      ({dailyChangeValue >= 0 ? '+' : ''}{dailyChangeValue.toFixed(2)})
-                                    </span>
-                                </div>
-                              )}
+                  {displayList.map((item) => (
+                    <div 
+                        key={item.symbol} 
+                        className={`bg-white rounded-xl border ${item.isLiquidated ? 'border-dashed border-slate-300 opacity-80' : 'border-slate-200'} shadow-sm overflow-hidden flex flex-col`}
+                    >
+                      <div className="p-4 md:p-5 border-b border-slate-50">
+                        <div className="flex justify-between items-start mb-4">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-lg md:text-xl font-bold text-slate-900">{item.symbol}</h4>
+                              <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${item.isLiquidated ? 'bg-slate-200 text-slate-600' : 'bg-slate-100 text-slate-500'}`}>
+                                {item.isLiquidated ? '今日已清仓' : item.cnName}
+                              </span>
                             </div>
                           </div>
-
-                          {/* 底部数据网格 */}
-                          <div className="grid grid-cols-3 gap-2 py-2 bg-slate-50/50 rounded-lg px-2">
-                            <div className="flex flex-col">
-                                <span className="text-[10px] text-slate-400 mb-0.5">持仓成本</span>
-                                <span className="text-xs md:text-sm font-semibold text-slate-700">
-                                    ${Math.round(investedPrincipal).toLocaleString()}
+                          <div className="text-right">
+                            <div className="text-xl md:text-2xl font-bold text-slate-800 transition-colors duration-300 font-mono">
+                              ${Number(item.currentPrice).toFixed(2)}
+                            </div>
+                            <div className={`text-xs font-medium mt-1 ${item.dailyChangePercent >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                                {item.dailyChangePercent >= 0 ? '+' : ''}{item.dailyChangePercent.toFixed(2)}% 
+                                <span className="ml-1 opacity-80">
+                                  ({item.dailyChangeValue >= 0 ? '+' : ''}{item.dailyChangeValue.toFixed(2)})
                                 </span>
                             </div>
-                            
-                            {/* 中间列：当日盈亏 */}
-                            <div className="flex flex-col text-center">
-                                <span className="text-[10px] text-slate-400 mb-0.5">当日盈亏</span>
-                                <div className={`text-xs md:text-sm font-semibold ${dailyPnL >= 0 ? 'text-red-500' : 'text-green-500'}`}>
-                                   {hasDailyData ? (
-                                      <>
-                                        {dailyPnL >= 0 ? '+' : ''}{Math.round(dailyPnL).toLocaleString()}
-                                      </>
-                                   ) : <span className="text-slate-300">-</span>}
-                                </div>
-                            </div>
-
-                            <div className="flex flex-col text-right">
-                                <span className="text-[10px] text-slate-400 mb-0.5">总收益</span>
-                                <div className={`text-xs md:text-sm font-semibold ${totalReturn >= 0 ? 'text-red-500' : 'text-green-500'}`}>
-                                    {totalReturn >= 0 ? '+' : ''}{Math.round(totalReturn).toLocaleString()}
-                                </div>
-                            </div>
                           </div>
                         </div>
-                        <div className="h-40 md:h-48 w-full relative bg-white pt-2">
-                           {realHistory.length > 0 ? <MiniCandleChart data={realHistory} /> : <div className="flex items-center justify-center h-full text-slate-400 text-xs">等待行情数据...</div>}
+
+                        {/* 底部数据网格 */}
+                        <div className="grid grid-cols-3 gap-2 py-2 bg-slate-50/50 rounded-lg px-2">
+                          
+                          {/* 🔄 修改处：显示持仓市值 (Market Value) */}
+                          <div className="flex flex-col">
+                              <span className="text-[10px] text-slate-400 mb-0.5">持仓市值</span>
+                              <span className="text-xs md:text-sm font-semibold text-slate-700">
+                                  ${Math.round(item.marketValue).toLocaleString()}
+                              </span>
+                          </div>
+                          
+                          <div className="flex flex-col text-center">
+                              <span className="text-[10px] text-slate-400 mb-0.5">当日盈亏</span>
+                              <div className={`text-xs md:text-sm font-semibold ${item.dailyPnL >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                                 {item.dailyPnL >= 0 ? '+' : ''}{Math.round(item.dailyPnL).toLocaleString()}
+                              </div>
+                          </div>
+
+                          <div className="flex flex-col text-right">
+                              <span className="text-[10px] text-slate-400 mb-0.5">总收益</span>
+                              <div className={`text-xs md:text-sm font-semibold ${item.totalReturn >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                                  {item.isLiquidated ? '-' : (item.totalReturn >= 0 ? '+' : '') + Math.round(item.totalReturn).toLocaleString()}
+                              </div>
+                          </div>
                         </div>
                       </div>
-                    );
-                  })}
-                  {(!positions || positions.length === 0) && (
-                    <div className="col-span-full py-8 md:py-12 text-center bg-white rounded-xl border border-dashed border-slate-300 text-slate-400 text-sm">该投资者当前空仓 (Keep Cash)</div>
+                      
+                      {/* 图表区域 */}
+                      <div className="h-40 md:h-48 w-full relative bg-white pt-2">
+                         {item.realHistory.length > 0 ? <MiniCandleChart data={item.realHistory} /> : <div className="flex items-center justify-center h-full text-slate-400 text-xs">等待行情数据...</div>}
+                      </div>
+                    </div>
+                  ))}
+                  
+                  {displayList.length === 0 && (
+                    <div className="col-span-full py-8 md:py-12 text-center bg-white rounded-xl border border-dashed border-slate-300 text-slate-400 text-sm">
+                      该投资者当前空仓，且今日无交易。
+                    </div>
                   )}
                 </div>
               </section>
@@ -482,7 +507,6 @@ export default function DashboardClient({
                           {/* Mobile */}
                           <div className="md:hidden col-span-2 flex justify-between items-center mb-1">
                               <span className="font-bold text-slate-800">{trade.symbol}</span>
-                              {/* 👈 修改：手机端时间格式化 */}
                               <span className="text-xs text-slate-400">
                                 {format(new Date(trade.created_at), 'yyyy-MM-dd HH:mm:ss')}
                               </span>
@@ -496,7 +520,6 @@ export default function DashboardClient({
                                 </div>
                           </div>
                           {/* Desktop */}
-                          {/* 👈 修改：桌面端时间格式化 */}
                           <div className="hidden md:block col-span-1 text-slate-400 text-xs font-mono">
                              {format(new Date(trade.created_at), 'yyyy-MM-dd HH:mm:ss')}
                           </div>
