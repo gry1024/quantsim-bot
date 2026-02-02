@@ -16,10 +16,12 @@ export const INVESTORS = [
   { id: 'xiaoqing', name: '小青 (Xiaoqing)' },
   { id: 'soldier', name: '兵王 (Soldier)' },
   { id: 'zen', name: '高僧 (Monk)' },
+  // ✨ 新增诗人
+  { id: 'poet', name: '诗人 (Poet)' },
 ];
 
 export const CONFIG = {
-  // 🔄 修改：移除 TLT，加入 COIN
+  // 包含 COIN
   SYMBOLS: ['QQQ', 'GLD', 'SPY', 'NVDA', 'COIN'],
   INITIAL_CAPITAL: 1000000,
 };

@@ -144,6 +144,26 @@ const zenStrategy: StrategyFn = ({ position, price, cash, isTradedToday }: Strat
   return { action: 'HOLD', reason: '入定' };
 };
 
+// 8. 诗人 (Poet) - 新增
+const poetStrategy: StrategyFn = ({ symbol, cash, isTradedToday }: StrategyParams): TradeDecision => {
+  // 1. 每日只操作一次
+  if (isTradedToday) return { action: 'HOLD', reason: '日内限频' };
+
+  // 2. 坚决不碰加密资产
+  if (symbol === 'COIN') {
+    return { action: 'HOLD', reason: '不碰加密' };
+  }
+
+  // 3. 固定金额定投
+  const DAILY_AMOUNT = 2000;
+
+  if (cash >= DAILY_AMOUNT) {
+    return { action: 'BUY', amountUSD: DAILY_AMOUNT, reason: '每日定投' };
+  }
+
+  return { action: 'HOLD', reason: '资金不足' };
+};
+
 export const STRATEGIES: Record<string, StrategyFn> = {
   leek: leekStrategy,
   gambler: gamblerStrategy,
@@ -151,5 +171,6 @@ export const STRATEGIES: Record<string, StrategyFn> = {
   dog: dogStrategy,
   xiaoqing: xiaoqingStrategy,
   soldier: soldierStrategy,
-  zen: zenStrategy
+  zen: zenStrategy,
+  poet: poetStrategy // 注册诗人
 };
