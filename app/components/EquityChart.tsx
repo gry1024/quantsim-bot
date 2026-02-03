@@ -70,8 +70,34 @@ export default function EquityChart({ data }: ChartProps) {
       const uniqueData = sortedData.filter((item, index, self) =>
         index === self.findIndex((t) => t.time === item.time)
       );
+
+      // ✨ 新增逻辑：自动补充 100万 起始点
+      // 原理：取第一条数据的时间，往前推一天作为“建仓时刻”，金额设为 1,000,000
+      let finalData = uniqueData;
+      if (uniqueData.length > 0) {
+        try {
+          const firstPoint = uniqueData[0];
+          // 仅处理字符串格式日期 (YYYY-MM-DD)，这是最常见格式
+          if (typeof firstPoint.time === 'string') {
+            const date = new Date(firstPoint.time);
+            date.setDate(date.getDate() - 1); // 减去一天
+            const prevDateStr = date.toISOString().split('T')[0]; // 转回 YYYY-MM-DD
+            
+            // 在数组头部插入本金起点
+            finalData = [
+              { time: prevDateStr as Time, value: 1000000 }, 
+              ...uniqueData
+            ];
+          }
+        } catch (e) {
+          console.error("无法自动添加本金起点:", e);
+          // 出错则回退到原始数据，不影响图表显示
+          finalData = uniqueData;
+        }
+      }
       
-      seriesRef.current.setData(uniqueData);
+      seriesRef.current.setData(finalData);
+      
       // ✨ 确保显示范围覆盖：建仓(起点) -> 现总资产(终点)
       chartRef.current.timeScale().fitContent(); 
     }
