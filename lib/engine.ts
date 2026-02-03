@@ -4,8 +4,7 @@ import { STRATEGIES } from './strategies';
 import { MarketData, Position, TradeDecision } from './type';
 
 /**
- * 【新增】获取美东时间（New York）下的 YYYY-MM-DD 字符串
- * 确保无论服务器在全球哪个位置，判断“今天”的标准与美股开盘地一致
+ * 获取美东时间（New York）下的 YYYY-MM-DD 字符串
  */
 function getNYDateString(date: Date = new Date()): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -46,13 +45,14 @@ async function getWeeklyStats(symbol: string): Promise<{ high: number; low: numb
  * 获取实时行情 (Sina API)
  */
 async function getMarketPrices(): Promise<Record<string, MarketData>> {
-  const symbols = CONFIG.SYMBOLS.map(s => s.toLowerCase()).join(',');
-  
-  // 🔧 修复点：将时间戳 t 参数移到 list 之前，防止新浪解析器将 &t 误认为是股票代码的一部分
-  const url = `https://hq.sinajs.cn/t=${Date.now()}&list=${symbols.split(',').map(s => `gb_${s}`).join(',')}`;
+  const symbols = CONFIG.SYMBOLS.map(s => `gb_${s.toLowerCase()}`).join(',');
+  const url = `https://hq.sinajs.cn/t=${Date.now()}&list=${symbols}`;
   
   try {
-    const res = await fetch(url, { headers: { 'Referer': 'https://finance.sina.com.cn/' }, cache: 'no-store' });
+    const res = await fetch(url, { 
+      headers: { 'Referer': 'https://finance.sina.com.cn/' }, 
+      cache: 'no-store' 
+    });
     const text = await res.text();
     const marketData: Record<string, MarketData> = {};
     
@@ -67,7 +67,10 @@ async function getMarketPrices(): Promise<Record<string, MarketData>> {
           marketData[symbol] = { 
             symbol, 
             price, 
-            changePercent: parseFloat(parts[3]) / 100, 
+            // ✅ 关键修复点：将索引从 2 修改为 4
+            // 新浪美股接口字段含义：1:价格, 2:涨跌额, 3:日期时间, 4:涨跌幅
+            // 之前错误使用索引 2 导致抓取到日期中的 2026 年，显示为 2026.00%
+            changePercent: parseFloat(parts[4]) / 100, 
             open: parseFloat(parts[5]) || price
           };
         }
@@ -138,8 +141,6 @@ async function finalizePortfolio(investorId: string, finalCash: number, marketMa
     updated_at: new Date().toISOString()
   }).eq('investor_id', investorId);
 
-  // ✨ 核心修改点：记录/更新每日资产快照
-  // 使用 "投资者ID_日期" 作为唯一 ID，确保每天只存一个点（保存当天最新值）
   const todayNY = getNYDateString();
   await supabase.from('equity_snapshots').upsert({
     id: `${investorId}_${todayNY}`, 

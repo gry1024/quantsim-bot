@@ -284,8 +284,8 @@ export default function DashboardClient({
     }
 
     const dailyChangeValue = currentPrice - yesterdayClose;
-    const dailyChangePercent = yesterdayClose > 0 ? (dailyChangeValue / yesterdayClose) * 100 : 0;
-
+    // const dailyChangePercent = yesterdayClose > 0 ? (dailyChangeValue / yesterdayClose) * 100 : 0;
+    const dailyChangePercent = quote ? quote.change * 100 : 0;
     const investedPrincipal = (pos?.average_cost || 0) * currentShares;
     
     const marketValue = currentPrice * currentShares; 
