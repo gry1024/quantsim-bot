@@ -2,17 +2,17 @@
 
 import { useState } from 'react';
 import { INVESTORS } from '@/lib/config';
-import { TrendingUp, TrendingDown, Trophy, ArrowRight, BookOpen, X } from 'lucide-react';
+import { TrendingUp, TrendingDown, Trophy, ArrowRight, BookOpen, X, AlertCircle } from 'lucide-react';
 
 const STRATEGY_DESCRIPTIONS: Record<string, string> = {
-    leek: "每支标的买入 $100,000 作为底仓。单日涨幅超过 2%,追高买入 $50,000;单日跌幅超过 5%全部清仓。",
-    gambler: "每支标的买入 $100,000 底仓。如果价格较上次买入价下跌超过 3%,则倍量补仓;上涨超 3%,卖出30%仓位。",
-    mom: "每支标的买入 $200,000 满仓。如果价格上涨超过 10%,卖出 20% 仓位取现;永不买入。",
-    dog: "每支标的买入 $50,000 底仓。涨 5% 卖一半;跌 2% 买入 $10,000。资产低过 $500k 全部清仓。",
-    xiaoqing: "每支标的买入 $100,000 底仓。如果价格较上次成交价下跌超过 3%,加仓 $50,000。永不卖出。",
-    soldier: "每支标的买入 $100,000 底仓。跌破周低买入50%;突破周高卖出10%。",
-    zen: "每支标的买入 $100,000 底仓。每天对每支标的以持仓金额的10%随机买入或卖出。",
-    poet: "每支标的（除 COIN 外）每日固定加仓 $2,000。坚决不碰加密资产。"
+  leek: "每支标的买入 $100,000 作为底仓。单日涨幅超过 2%,追高买入 $50,000;单日跌幅超过 5%全部清仓。",
+  gambler: "每支标的买入 $100,000 底仓。如果价格较上次买入价下跌超过 3%,则倍量补仓;上涨超 3%,卖出30%仓位。",
+  mom: "每支标的买入 $200,000 满仓。如果价格上涨超过 10%,卖出 20% 仓位取现;永不买入。",
+  dog: "每支标的买入 $50,000 底仓。较上次交易价涨 5% 卖出50%仓位;当日跌幅超 2% 买入 $10,000。资产低于 $500k 全部清仓。",
+  xiaoqing: "每支标的买入 $100,000 底仓。如果价格较上次成交价下跌超过 3%,加仓 $50,000。永不卖出。",
+  soldier: "每支标的买入 $100,000 底仓。跌破周低买入50%;突破周高卖出10%。",
+  zen: "每支标的买入 $100,000 底仓。每天对每支标的以持仓金额的10%随机买入或卖出。",
+  poet: "每支标的（除 COIN 外）每日固定加仓 $2,000。坚决不碰加密资产。"
 };
 
 interface Props {
@@ -37,6 +37,13 @@ export default function LeaderboardView({ portfolios = [], currentInvestorId, on
         <p className="text-xs md:text-sm text-slate-500">
           实时监控所有量化策略的表现。
         </p>
+        
+        {/* ✨ 新增的联系开发者文案 */}
+        <div className="mt-2 inline-block px-4 py-1.5 bg-blue-50 border border-blue-100 rounded-full">
+           <p className="text-[10px] md:text-xs text-blue-600 font-medium">
+             想要测试你的投资策略？联系开发者加入你的bot：<span className="font-bold select-all">gry0719hh</span>
+           </p>
+        </div>
       </div>
 
       <div className="bg-white rounded-xl md:rounded-2xl border border-slate-200 shadow-sm overflow-hidden mx-1 md:mx-0">
@@ -127,7 +134,15 @@ export default function LeaderboardView({ portfolios = [], currentInvestorId, on
         </div>
       </div>
 
-      {/* 弹窗部分保持一致，仅缩小标题 */}
+      {/* ⚠️ 新增的免责声明 Footer */}
+      <div className="mt-8 text-center flex items-center justify-center gap-1.5 opacity-60 hover:opacity-100 transition-opacity">
+        <AlertCircle size={12} className="text-slate-400" />
+        <p className="text-[10px] md:text-xs text-slate-400 font-medium">
+          模拟游戏，仅供娱乐，投资需谨慎。
+        </p>
+      </div>
+
+      {/* 弹窗部分 */}
       {viewingStrategyId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6 relative border border-slate-100">
