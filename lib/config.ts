@@ -9,15 +9,14 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
 });
 
 export const INVESTORS = [
-  { id: 'leek', name: '韭菜 (Leek)' },
-  { id: 'gambler', name: '赌怪 (Gambler)' },
-  { id: 'mom', name: '宝妈 (Mom)' },
-  { id: 'dog', name: '狗哥 (Dog)' },
-  { id: 'xiaoqing', name: '小青 (Xiaoqing)' },
-  { id: 'soldier', name: '兵王 (Soldier)' },
-  { id: 'zen', name: '高僧 (Monk)' },
-  // ✨ 新增诗人
-  { id: 'poet', name: '诗人 (Poet)' },
+  { id: 'leek', name: '韭菜' },
+  { id: 'gambler', name: '赌怪' },
+  { id: 'mom', name: '宝妈' },
+  { id: 'dog', name: '狗哥' },
+  { id: 'xiaoqing', name: '小青' },
+  { id: 'soldier', name: '兵王' },
+  { id: 'zen', name: '高僧' },
+  { id: 'poet', name: '诗人' },
 ];
 
 export const CONFIG = {

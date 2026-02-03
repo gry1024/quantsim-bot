@@ -108,7 +108,7 @@ export default function EquityChart({ data }: ChartProps) {
       <div className="flex items-center justify-between mb-4 px-2">
         <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-blue-600"></span>
-          资产净值走势 (实时同步)
+          资产净值走势
         </h3>
       </div>
       <div ref={chartContainerRef} className="w-full rounded-xl border border-slate-100 shadow-sm overflow-hidden" />
