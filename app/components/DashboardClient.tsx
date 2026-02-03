@@ -71,8 +71,6 @@ export default function DashboardClient({
     const [equityData, setEquityData] = useState(initialChartData || []);
     const [historyMap, setHistoryMap] = useState(initialHistoryMap || {});
     const [isLive, setIsLive] = useState(false);
-
-    // ✨ 修改 1: 增加 changeValue 字段定义
     const [quotes, setQuotes] = useState<Record<string, { price: number, change: number, changeValue: number }>>({});
 
   const fetchInvestorData = async (id: string) => {
@@ -158,7 +156,6 @@ export default function DashboardClient({
             return { ...prevMap, [symbol]: newList };
           });
       })
-      // ✨ 修改 2: 监听 change_value 变更
       .on('postgres_changes', { event: '*', schema: 'public', table: 'market_quotes' }, (payload: any) => {
         const newQuote = payload.new;
         if (newQuote) {
@@ -167,7 +164,7 @@ export default function DashboardClient({
             [newQuote.symbol]: { 
               price: Number(newQuote.price), 
               change: Number(newQuote.change_percent),
-              changeValue: Number(newQuote.change_value) // 新增读取
+              changeValue: Number(newQuote.change_value)
             }
           }));
         }
@@ -181,7 +178,7 @@ export default function DashboardClient({
           initialQuotes[q.symbol] = { 
             price: Number(q.price), 
             change: Number(q.change_percent),
-            changeValue: Number(q.change_value) // ✨ 新增初始化读取
+            changeValue: Number(q.change_value)
           };
         });
         setQuotes(initialQuotes);
@@ -250,6 +247,8 @@ export default function DashboardClient({
     const currentShares = pos?.quantity || 0; 
     let todayBuyQty = 0;
     let todaySellQty = 0;
+    let todayBuyAmount = 0;   // ✨ 新增：今日买入总额
+    let todaySellAmount = 0;  // ✨ 新增：今日卖出总额
     let lastSellPrice = 0;
 
     const sortedTodayTrades = [...symbolTrades].sort((a, b) => 
@@ -258,8 +257,15 @@ export default function DashboardClient({
     
     symbolTrades.forEach(t => {
         const q = t.shares ?? t.quantity ?? 0;
-        if (t.action === 'BUY') todayBuyQty += q;
-        if (t.action === 'SELL') todaySellQty += q;
+        const amt = Number(t.amount) || (q * Number(t.price)); // 优先取记录的 amount
+        if (t.action === 'BUY') {
+            todayBuyQty += q;
+            todayBuyAmount += amt;
+        }
+        if (t.action === 'SELL') {
+            todaySellQty += q;
+            todaySellAmount += amt;
+        }
     });
 
     if (sortedTodayTrades.length > 0) {
@@ -285,25 +291,22 @@ export default function DashboardClient({
         currentPrice = lastSellPrice;
     }
 
-    let dailyPnL = 0;
-    if (yesterdayShares > 0 && yesterdayClose > 0) {
-        dailyPnL = yesterdayShares * (currentPrice - yesterdayClose);
-    }
+    // ✨ 核心修改：应用当日盈亏计算公式
+    // 当日盈亏 = (当日持仓市值 - 昨日持仓市值) + (当日卖出成交额 - 当日买入成交额)
+    const currentMarketValue = currentShares * currentPrice;
+    const yesterdayMarketValue = yesterdayShares * yesterdayClose;
+    const dailyPnL = (currentMarketValue - yesterdayMarketValue) + (todaySellAmount - todayBuyAmount);
 
-    // ✨ 修改 3: 优先使用 API 原值，否则回退到计算值
     let dailyChangeValue = 0;
     const dailyChangePercent = quote ? quote.change * 100 : 0;
 
     if (quote && quote.changeValue !== undefined && quote.changeValue !== null && !isNaN(quote.changeValue)) {
-        // 1. 优先：直接用数据库存的 API 原值
         dailyChangeValue = quote.changeValue;
     } else if (yesterdayClose > 0) {
-        // 2. 兜底：如果还没存入新数据，用昨收计算
         dailyChangeValue = currentPrice - yesterdayClose;
     }
 
     const investedPrincipal = (pos?.average_cost || 0) * currentShares;
-    
     const marketValue = currentPrice * currentShares; 
     const totalReturn = marketValue - investedPrincipal;
 
@@ -316,9 +319,9 @@ export default function DashboardClient({
         currentShares,
         currentPrice,
         yesterdayShares,
-        dailyPnL,
+        dailyPnL,             // 返回计算后的当日盈亏
         dailyChangePercent,
-        dailyChangeValue, // 返回该值
+        dailyChangeValue,
         totalReturn,
         investedPrincipal,
         marketValue,
@@ -381,7 +384,6 @@ export default function DashboardClient({
       <main className="flex-1 flex flex-col h-screen overflow-hidden bg-[#F8FAFC] relative">
         <header className="px-4 md:px-8 py-4 md:py-5 bg-white border-b border-slate-200 flex justify-between items-center z-10 shrink-0">
           <div className="flex items-center gap-3">
-            {/* Desktop Only Title */}
             <h2 className="hidden md:flex text-lg font-bold text-slate-800 items-center gap-2">
               <span className="flex items-center gap-2">
                 {activeView === 'monitor' ? <Layers size={18} className="text-slate-500" /> : <Trophy size={18} className="text-yellow-500" />}
@@ -389,7 +391,6 @@ export default function DashboardClient({
               </span>
             </h2>
 
-            {/* ✨ 移动端置顶：全自动量化终端 branding */}
             <div className="md:hidden flex items-center gap-2">
               <div className="w-7 h-7 bg-slate-900 rounded-md flex items-center justify-center text-white">
                 <Activity size={14} />
@@ -414,13 +415,9 @@ export default function DashboardClient({
           </div>
         </header>
 
-        {/* Mobile Info Section */}
         {activeView === 'monitor' && (
           <div className="md:hidden bg-white border-b border-slate-100 px-4 py-3 shrink-0">
-              {/* 视角切换控件 */}
               <InvestorSelector current={currentInvestorId} onChange={handleInvestorChange} />
-
-               {/* 总资产数字显示 */}
                <div className="flex justify-between items-end mt-2">
                  <div>
                    <div className="text-[9px] text-slate-400 uppercase font-bold tracking-tighter mb-1">Net Worth</div>
@@ -448,12 +445,10 @@ export default function DashboardClient({
             />
           ) : (
             <>
-              {/* Equity Chart */}
               <section className="mb-4 md:mb-8">
                 <EquityChart data={finalChartData} />
               </section>
 
-              {/* Mobile Only: Asset Distribution */}
               <section className="md:hidden mb-6 bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
                  <div className="text-[9px] font-bold text-slate-400 uppercase mb-3 flex items-center gap-1">
                     <PieChart size={12} /> 资产分布
@@ -488,7 +483,6 @@ export default function DashboardClient({
                             <div className="text-base md:text-2xl font-bold text-slate-800 font-mono">
                               ${Number(item.currentPrice).toFixed(2)}
                             </div>
-                            {/* ✨ 修改 4: 在百分比后追加具体的涨跌数值 */}
                             <div className={`text-[9px] md:text-xs font-medium mt-0.5 ${item.dailyChangePercent >= 0 ? 'text-red-500' : 'text-green-500'}`}>
                                 {item.dailyChangePercent >= 0 ? '+' : ''}{item.dailyChangePercent.toFixed(2)}%
                                 <span className="ml-1 opacity-80">
@@ -526,7 +520,6 @@ export default function DashboardClient({
                 </div>
               </section>
 
-              {/* 交易日志 */}
               <section>
                  <div className="flex items-center justify-between mb-4 px-1"><h3 className="font-bold text-slate-700 flex items-center gap-2 text-[12px] md:text-base"><Clock size={15} /> 交易日志</h3></div>
                  <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
@@ -537,7 +530,6 @@ export default function DashboardClient({
                       
                       return (
                         <div key={trade.id} className="grid grid-cols-2 md:grid-cols-6 px-4 md:px-6 py-3 md:py-3.5 items-center hover:bg-slate-50/80 transition-colors text-sm">
-                          {/* Mobile Layout for Logs */}
                           <div className="md:hidden col-span-2 flex justify-between items-center mb-1">
                               <span className="font-bold text-slate-800 text-[10px]">{trade.symbol}</span>
                               <span className="text-[8px] text-slate-400 font-mono">{format(new Date(trade.created_at), 'MM-dd HH:mm')}</span>
@@ -551,7 +543,6 @@ export default function DashboardClient({
                                 <div className="text-[8px] text-slate-400 italic truncate max-w-[100px]">{trade.reason}</div>
                           </div>
                           
-                          {/* Desktop Layout (No changes) */}
                           <div className="hidden md:block col-span-1 text-slate-400 text-xs font-mono">{format(new Date(trade.created_at), 'yyyy-MM-dd HH:mm:ss')}</div>
                           <div className="hidden md:block col-span-1 font-bold text-slate-800">{trade.symbol}</div>
                           <div className="hidden md:block col-span-1"><span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${trade.action === 'BUY' ? 'bg-red-50 text-red-700 border-red-100' : 'bg-green-50 text-green-700 border-green-100'}`}>{trade.action === 'BUY' ? '买入' : '卖出'}</span></div>
@@ -568,7 +559,6 @@ export default function DashboardClient({
           )}
         </div>
         
-        {/* Mobile Navbar */}
         <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 py-1 flex items-center z-50 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] pb-safe">
           <div className="flex-1 flex justify-center">
             <button onClick={() => setActiveView('monitor')} className={`flex flex-col items-center gap-1 px-6 py-2 rounded-lg transition ${activeView === 'monitor' ? 'text-slate-900' : 'text-slate-400'}`}>
