@@ -47,7 +47,6 @@ async function getWeeklyStats(symbol: string): Promise<{ high: number; low: numb
  */
 async function getMarketPrices(): Promise<Record<string, MarketData>> {
   const symbols = CONFIG.SYMBOLS.map(s => `gb_${s.toLowerCase()}`).join(',');
-  // 将 t 参数放在最前面，避免干扰列表解析
   const url = `https://hq.sinajs.cn/t=${Date.now()}&list=${symbols}`;
   
   try {
@@ -66,16 +65,13 @@ async function getMarketPrices(): Promise<Record<string, MarketData>> {
         const price = parseFloat(parts[1]);
         
         if (!isNaN(price) && price > 0) {
-          // ✅ 核心修复：根据 debug-sina.ts 的输出
-          // Index 2 是 "0.69" (涨跌幅百分比)
-          // Index 3 是 "2026-02-03" (日期，千万别用这个，否则显示 2026%)
-          // Index 4 是 "4.27" (涨跌额)
-          
           marketData[symbol] = { 
             symbol, 
             price, 
-            // 这里获取 parts[2] (例如 0.69)，除以 100 变成 0.0069 存入 DB
+            // Index 2: 涨跌幅百分比 (0.69) -> 存为 0.0069
             changePercent: parseFloat(parts[2]) / 100, 
+            // ✨ Index 4: 涨跌额 (4.27) -> 直接存
+            changeValue: parseFloat(parts[4]), 
             open: parseFloat(parts[5]) || price
           };
         }
@@ -87,7 +83,6 @@ async function getMarketPrices(): Promise<Record<string, MarketData>> {
     return {};
   }
 }
-
 /**
  * 执行交易 (更新 positions 和 trades)
  */
@@ -164,6 +159,7 @@ async function updateRealTimeQuotes(marketMap: Record<string, MarketData>) {
     symbol: m.symbol,
     price: m.price,
     change_percent: m.changePercent,
+    change_value: m.changeValue, // ✨ 新增：写入数据库
     updated_at: new Date().toISOString()
   }));
 
@@ -171,7 +167,6 @@ async function updateRealTimeQuotes(marketMap: Record<string, MarketData>) {
 
   await supabase.from('market_quotes').upsert(updates, { onConflict: 'symbol' });
 }
-
 // ================= 主逻辑 =================
 
 export async function runTradingBot() {

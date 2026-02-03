@@ -72,7 +72,8 @@ export default function DashboardClient({
     const [historyMap, setHistoryMap] = useState(initialHistoryMap || {});
     const [isLive, setIsLive] = useState(false);
 
-    const [quotes, setQuotes] = useState<Record<string, { price: number, change: number }>>({});
+    // ✨ 修改 1: 增加 changeValue 字段定义
+    const [quotes, setQuotes] = useState<Record<string, { price: number, change: number, changeValue: number }>>({});
 
   const fetchInvestorData = async (id: string) => {
     setIsLive(false);
@@ -157,6 +158,7 @@ export default function DashboardClient({
             return { ...prevMap, [symbol]: newList };
           });
       })
+      // ✨ 修改 2: 监听 change_value 变更
       .on('postgres_changes', { event: '*', schema: 'public', table: 'market_quotes' }, (payload: any) => {
         const newQuote = payload.new;
         if (newQuote) {
@@ -164,7 +166,8 @@ export default function DashboardClient({
             ...prev,
             [newQuote.symbol]: { 
               price: Number(newQuote.price), 
-              change: Number(newQuote.change_percent) 
+              change: Number(newQuote.change_percent),
+              changeValue: Number(newQuote.change_value) // 新增读取
             }
           }));
         }
@@ -175,7 +178,11 @@ export default function DashboardClient({
       if (data) {
         const initialQuotes: Record<string, any> = {};
         data.forEach((q: any) => {
-          initialQuotes[q.symbol] = { price: Number(q.price), change: Number(q.change_percent) };
+          initialQuotes[q.symbol] = { 
+            price: Number(q.price), 
+            change: Number(q.change_percent),
+            changeValue: Number(q.change_value) // ✨ 新增初始化读取
+          };
         });
         setQuotes(initialQuotes);
       }
@@ -283,9 +290,18 @@ export default function DashboardClient({
         dailyPnL = yesterdayShares * (currentPrice - yesterdayClose);
     }
 
-    const dailyChangeValue = currentPrice - yesterdayClose;
-    // const dailyChangePercent = yesterdayClose > 0 ? (dailyChangeValue / yesterdayClose) * 100 : 0;
+    // ✨ 修改 3: 优先使用 API 原值，否则回退到计算值
+    let dailyChangeValue = 0;
     const dailyChangePercent = quote ? quote.change * 100 : 0;
+
+    if (quote && quote.changeValue !== undefined && quote.changeValue !== null && !isNaN(quote.changeValue)) {
+        // 1. 优先：直接用数据库存的 API 原值
+        dailyChangeValue = quote.changeValue;
+    } else if (yesterdayClose > 0) {
+        // 2. 兜底：如果还没存入新数据，用昨收计算
+        dailyChangeValue = currentPrice - yesterdayClose;
+    }
+
     const investedPrincipal = (pos?.average_cost || 0) * currentShares;
     
     const marketValue = currentPrice * currentShares; 
@@ -302,7 +318,7 @@ export default function DashboardClient({
         yesterdayShares,
         dailyPnL,
         dailyChangePercent,
-        dailyChangeValue,
+        dailyChangeValue, // 返回该值
         totalReturn,
         investedPrincipal,
         marketValue,
@@ -472,8 +488,12 @@ export default function DashboardClient({
                             <div className="text-base md:text-2xl font-bold text-slate-800 font-mono">
                               ${Number(item.currentPrice).toFixed(2)}
                             </div>
+                            {/* ✨ 修改 4: 在百分比后追加具体的涨跌数值 */}
                             <div className={`text-[9px] md:text-xs font-medium mt-0.5 ${item.dailyChangePercent >= 0 ? 'text-red-500' : 'text-green-500'}`}>
                                 {item.dailyChangePercent >= 0 ? '+' : ''}{item.dailyChangePercent.toFixed(2)}%
+                                <span className="ml-1 opacity-80">
+                                  ({item.dailyChangeValue >= 0 ? '+' : ''}{item.dailyChangeValue.toFixed(2)})
+                                </span>
                             </div>
                           </div>
                         </div>

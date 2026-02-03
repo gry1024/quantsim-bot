@@ -4,6 +4,7 @@ export interface MarketData {
     symbol: string;
     price: number;
     changePercent: number;
+    changeValue: number; // ✨ 新增：涨跌额
     open: number;
   }
   
