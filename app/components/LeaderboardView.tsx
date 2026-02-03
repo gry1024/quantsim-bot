@@ -149,7 +149,7 @@ export default function LeaderboardView({ portfolios = [], currentInvestorId, on
             <button onClick={() => setViewingStrategyId(null)} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 p-1"><X size={20} /></button>
             <div className="mb-4">
               <h3 className="text-lg font-bold text-slate-900">
-                {INVESTORS.find(i => i.id === viewingStrategyId)?.name} 逻辑
+                {INVESTORS.find(i => i.id === viewingStrategyId)?.name} 的策略
               </h3>
             </div>
             <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 text-slate-700 text-xs md:text-sm leading-relaxed font-medium">
