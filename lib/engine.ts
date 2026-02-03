@@ -5,6 +5,7 @@ import { MarketData, Position, TradeDecision } from './type';
 
 /**
  * 获取美东时间（New York）下的 YYYY-MM-DD 字符串
+ * 确保无论服务器在全球哪个位置，判断“今天”的标准与美股开盘地一致
  */
 function getNYDateString(date: Date = new Date()): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -46,6 +47,7 @@ async function getWeeklyStats(symbol: string): Promise<{ high: number; low: numb
  */
 async function getMarketPrices(): Promise<Record<string, MarketData>> {
   const symbols = CONFIG.SYMBOLS.map(s => `gb_${s.toLowerCase()}`).join(',');
+  // 将 t 参数放在最前面，避免干扰列表解析
   const url = `https://hq.sinajs.cn/t=${Date.now()}&list=${symbols}`;
   
   try {
@@ -64,13 +66,16 @@ async function getMarketPrices(): Promise<Record<string, MarketData>> {
         const price = parseFloat(parts[1]);
         
         if (!isNaN(price) && price > 0) {
+          // ✅ 核心修复：根据 debug-sina.ts 的输出
+          // Index 2 是 "0.69" (涨跌幅百分比)
+          // Index 3 是 "2026-02-03" (日期，千万别用这个，否则显示 2026%)
+          // Index 4 是 "4.27" (涨跌额)
+          
           marketData[symbol] = { 
             symbol, 
             price, 
-            // ✅ 关键修复点：将索引从 2 修改为 4
-            // 新浪美股接口字段含义：1:价格, 2:涨跌额, 3:日期时间, 4:涨跌幅
-            // 之前错误使用索引 2 导致抓取到日期中的 2026 年，显示为 2026.00%
-            changePercent: parseFloat(parts[4]) / 100, 
+            // 这里获取 parts[2] (例如 0.69)，除以 100 变成 0.0069 存入 DB
+            changePercent: parseFloat(parts[2]) / 100, 
             open: parseFloat(parts[5]) || price
           };
         }
@@ -141,6 +146,7 @@ async function finalizePortfolio(investorId: string, finalCash: number, marketMa
     updated_at: new Date().toISOString()
   }).eq('investor_id', investorId);
 
+  // 记录/更新每日资产快照
   const todayNY = getNYDateString();
   await supabase.from('equity_snapshots').upsert({
     id: `${investorId}_${todayNY}`, 
